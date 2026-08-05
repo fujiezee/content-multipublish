@@ -1,6 +1,6 @@
-# 一文多发（content-multipublish）
+# 点物GEO 文章多平台同步助手
 
-本机运行的多平台文章发布工具：写一篇富文本文章，用 Playwright 串行同步到多个内容平台。
+本机运行的多平台文章发布工具：写一篇富文本文章，用 Playwright 串行同步到多个内容平台，也可配合 Chrome 扩展一键分发。
 
 - **数据不出本机**：Cookie / 文章存在本地 `data/`，不经过第三方服务器
 - **扫码连平台**：有头浏览器登录，会话持久化后可复用
@@ -57,7 +57,7 @@ npm run browsers
 
 未包含：WordPress / Typecho（需站点 URL 与 XML-RPC 等单独配置）、Hexo/Hugo（导出类）。
 
-可选：文章编辑器内「点物GEO」按钮可配合 Chrome 扩展使用（开发者模式加载 `tools/dianwu-geo`）。官网 [dianwu.ai](https://dianwu.ai)。
+可选：文章编辑器内「多平台同步」按钮可配合 Chrome 扩展使用（开发者模式加载 `tools/dianwu-geo`）。官网 [dianwu.ai](https://dianwu.ai)。
 
 ## 项目结构（简）
 
@@ -65,9 +65,9 @@ npm run browsers
 src/lib/publishers/   # 各平台 Playwright 适配器
 src/lib/queue/        # 串行发布队列与会话连接
 src/app/              # Next.js UI + API
-public/geo-sync/      # 点物GEO 网页 SDK（本地）
+public/geo-sync/      # 点物GEO 文章多平台同步助手 网页 SDK（本地）
 data/                 # 本地运行时数据（gitignore，勿提交）
-tools/dianwu-geo/     # 点物GEO Chrome 扩展（可选）
+tools/dianwu-geo/     # 点物GEO 文章多平台同步助手 Chrome 扩展（可选）
 ```
 
 ## 常见问题

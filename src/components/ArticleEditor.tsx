@@ -7,7 +7,7 @@ import { PLATFORMS } from "@/lib/types";
 import { JobBadge } from "@/components/StatusBadge";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { toEditorHtml } from "@/lib/content/adapt";
-import { syncWithDianwuGeo } from "@/lib/dianwu-geo";
+import { syncWithDianwuGeo, DIANWU_GEO_PRODUCT_NAME } from "@/lib/dianwu-geo";
 
 export function ArticleEditor({ id }: { id: string }) {
   const router = useRouter();
@@ -139,7 +139,7 @@ export function ArticleEditor({ id }: { id: string }) {
     if (data.path) setCoverPath(data.path);
   }
 
-  /** Pull up 点物GEO Chrome extension sync dialog. */
+  /** Pull up 点物GEO 文章多平台同步助手 Chrome extension sync dialog. */
   async function syncViaExtension() {
     setSyncingExt(true);
     setMessage(null);
@@ -163,7 +163,7 @@ export function ArticleEditor({ id }: { id: string }) {
         thumb,
       });
       setMessage(
-        "已拉起点物GEO。请在弹窗里勾选平台；目标平台需先在对应网站登录。",
+        `已拉起${DIANWU_GEO_PRODUCT_NAME}。请在弹窗里勾选平台；目标平台需先在对应网站登录。`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -194,9 +194,9 @@ export function ArticleEditor({ id }: { id: string }) {
             className="btn btn-ghost"
             onClick={() => void syncViaExtension()}
             disabled={syncingExt || !title.trim()}
-            title="通过 Chrome「点物GEO」扩展分发到更多平台（dianwu.ai）"
+            title={`通过 Chrome「${DIANWU_GEO_PRODUCT_NAME}」扩展分发到更多平台（dianwu.ai）`}
           >
-            {syncingExt ? "拉起中…" : "点物GEO"}
+            {syncingExt ? "拉起中…" : "多平台同步"}
           </button>
           <button className="btn btn-primary" onClick={openPublish}>
             发布到平台

@@ -3,8 +3,8 @@ import { Nav } from "@/components/Nav";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "内容分发",
-  description: "一文多发：微博 · 百家号 · 知乎",
+  title: "点物GEO 文章多平台同步助手",
+  description: "本机多平台文章发布：Playwright 同步 + 点物GEO 扩展分发",
 };
 
 export default function RootLayout({

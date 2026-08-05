@@ -1,4 +1,6 @@
-/** Browser SDK bridge for 点物GEO Chrome extension (dianwu.ai). */
+/** Browser SDK bridge for 点物GEO 文章多平台同步助手 Chrome extension (dianwu.ai). */
+
+export const DIANWU_GEO_PRODUCT_NAME = "点物GEO 文章多平台同步助手";
 
 export type DianwuGeoArticle = {
   title: string;
@@ -37,7 +39,8 @@ function loadScript(src: string) {
     script.async = true;
     script.dataset.dianwuGeo = src;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("点物GEO SDK 加载失败"));
+    script.onerror = () =>
+      reject(new Error(`${DIANWU_GEO_PRODUCT_NAME} SDK 加载失败`));
     document.head.appendChild(script);
   });
 }
@@ -53,7 +56,7 @@ export async function ensureDianwuGeoSdk() {
   }
   if (typeof window.syncPost !== "function") {
     throw new Error(
-      `未检测到点物GEO 扩展。请在 Chrome 开发者模式加载 ${EXTENSION_DIR}（https://dianwu.ai）`,
+      `未检测到${DIANWU_GEO_PRODUCT_NAME} 扩展。请在 Chrome 开发者模式加载 ${EXTENSION_DIR}（https://dianwu.ai）`,
     );
   }
 }

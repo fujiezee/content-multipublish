@@ -17,10 +17,10 @@ export function Nav() {
       <div className="shell flex items-center justify-between py-4">
         <Link href="/" className="group">
           <div className="text-[1.35rem] font-semibold tracking-tight text-[var(--accent)]">
-            内容分发
+            点物GEO
           </div>
           <div className="text-xs text-[var(--muted)] group-hover:text-[var(--ink)] transition-colors">
-            Playwright · 一文多发
+            文章多平台同步助手
           </div>
         </Link>
         <nav className="flex items-center gap-1">
