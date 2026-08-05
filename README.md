@@ -57,7 +57,7 @@ npm run browsers
 
 未包含：WordPress / Typecho（需站点 URL 与 XML-RPC 等单独配置）、Hexo/Hugo（导出类）。
 
-编辑器内仍保留「同步助手」入口，可加载仓库内 `tools/wechatsync`（[Wechatsync](https://github.com/wechatsync/Wechatsync)，GPL）作为对照兜底；主路径是本项目自建 Playwright 适配器。
+可选：文章编辑器内「点物GEO」按钮可配合 Chrome 扩展使用（开发者模式加载 `tools/dianwu-geo`）。官网 [dianwu.ai](https://dianwu.ai)。
 
 ## 项目结构（简）
 
@@ -65,8 +65,9 @@ npm run browsers
 src/lib/publishers/   # 各平台 Playwright 适配器
 src/lib/queue/        # 串行发布队列与会话连接
 src/app/              # Next.js UI + API
+public/geo-sync/      # 点物GEO 网页 SDK（本地）
 data/                 # 本地运行时数据（gitignore，勿提交）
-tools/wechatsync/     # 可选浏览器扩展解压包
+tools/dianwu-geo/     # 点物GEO Chrome 扩展（可选）
 ```
 
 ## 常见问题
@@ -94,4 +95,4 @@ tools/wechatsync/     # 可选浏览器扩展解压包
 
 ## License
 
-应用代码见 [LICENSE](LICENSE)（MIT）。`tools/wechatsync` 源自 Wechatsync，遵循其 GPL-3.0 许可。
+应用代码见 [LICENSE](LICENSE)（MIT）。

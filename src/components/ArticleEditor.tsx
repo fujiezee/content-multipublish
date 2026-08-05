@@ -7,7 +7,7 @@ import { PLATFORMS } from "@/lib/types";
 import { JobBadge } from "@/components/StatusBadge";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { toEditorHtml } from "@/lib/content/adapt";
-import { syncWithWechatSync } from "@/lib/wechatsync";
+import { syncWithDianwuGeo } from "@/lib/dianwu-geo";
 
 export function ArticleEditor({ id }: { id: string }) {
   const router = useRouter();
@@ -139,7 +139,7 @@ export function ArticleEditor({ id }: { id: string }) {
     if (data.path) setCoverPath(data.path);
   }
 
-  /** Pull up Wechatsync Chrome extension sync dialog (掘金/头条/公众号等). */
+  /** Pull up 点物GEO Chrome extension sync dialog. */
   async function syncViaExtension() {
     setSyncingExt(true);
     setMessage(null);
@@ -156,14 +156,14 @@ export function ArticleEditor({ id }: { id: string }) {
             : undefined;
         }
       }
-      await syncWithWechatSync({
+      await syncWithDianwuGeo({
         title: title.trim() || "未命名",
         desc: summary.trim() || undefined,
         content: body || "<p></p>",
         thumb,
       });
       setMessage(
-        "已拉起「文章同步助手」。请在弹窗里勾选平台；目标平台需先在对应网站登录。",
+        "已拉起点物GEO。请在弹窗里勾选平台；目标平台需先在对应网站登录。",
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -194,9 +194,9 @@ export function ArticleEditor({ id }: { id: string }) {
             className="btn btn-ghost"
             onClick={() => void syncViaExtension()}
             disabled={syncingExt || !title.trim()}
-            title="通过 Chrome「文章同步助手」扩展分发到更多平台"
+            title="通过 Chrome「点物GEO」扩展分发到更多平台（dianwu.ai）"
           >
-            {syncingExt ? "拉起中…" : "同步助手"}
+            {syncingExt ? "拉起中…" : "点物GEO"}
           </button>
           <button className="btn btn-primary" onClick={openPublish}>
             发布到平台
