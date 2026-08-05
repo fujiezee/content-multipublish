@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://card.weibo.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://card.weibo.com/article/v5/editor"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "card.weibo.com",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://weibo.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://weibo.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "picupload.weibo.com",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

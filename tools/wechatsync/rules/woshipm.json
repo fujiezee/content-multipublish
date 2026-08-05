@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "X-Requested-With",
+          "operation": "set",
+          "value": "XMLHttpRequest"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "woshipm.com/wp-admin/admin-ajax.php",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "X-Requested-With",
+          "operation": "set",
+          "value": "XMLHttpRequest"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "woshipm.com/api2/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

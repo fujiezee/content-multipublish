@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "x-requested-with",
+          "operation": "set",
+          "value": "fetch"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "www.zhihu.com/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "x-requested-with",
+          "operation": "set",
+          "value": "fetch"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "zhuanlan.zhihu.com/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "x-requested-with",
+          "operation": "set",
+          "value": "fetch"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "api.zhihu.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

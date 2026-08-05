@@ -1,0 +1,25 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.xueqiu.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.xueqiu.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.xueqiu.com/xq/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

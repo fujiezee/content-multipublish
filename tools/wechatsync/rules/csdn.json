@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://editor.csdn.net"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://editor.csdn.net/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "bizapi.csdn.net",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://editor.csdn.net"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://editor.csdn.net/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "imgservice.csdn.net",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

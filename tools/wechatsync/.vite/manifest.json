@@ -1,0 +1,134 @@
+{
+  "../../../../../../../../@crx/manifest": {
+    "file": "assets/crx-manifest.js-56niADI8.js",
+    "name": "crx-manifest.js",
+    "src": "../../../../../../../../@crx/manifest",
+    "isEntry": true
+  },
+  "__commonjsHelpers-BosuxZz1.js": {
+    "file": "assets/_commonjsHelpers-BosuxZz1.js",
+    "name": "_commonjsHelpers"
+  },
+  "_analytics-XA79Jluk.js": {
+    "file": "assets/analytics-XA79Jluk.js",
+    "name": "analytics",
+    "imports": [
+      "_logger-CvfM-6aa.js"
+    ]
+  },
+  "_globals-!~{004}~.js": {
+    "file": "assets/globals-D_07OMId.css",
+    "src": "_globals-!~{004}~.js"
+  },
+  "_globals-DmOqlBAC.js": {
+    "file": "assets/globals-DmOqlBAC.js",
+    "name": "globals",
+    "imports": [
+      "__commonjsHelpers-BosuxZz1.js"
+    ],
+    "css": [
+      "assets/globals-D_07OMId.css"
+    ]
+  },
+  "_index.browser-jmXnl6ZB.js": {
+    "file": "assets/index.browser-jmXnl6ZB.js",
+    "name": "index.browser"
+  },
+  "_logger-CvfM-6aa.js": {
+    "file": "assets/logger-CvfM-6aa.js",
+    "name": "logger"
+  },
+  "extractor.ts-loader.js": {
+    "file": "assets/extractor.ts-loader-BH2EWQja.js",
+    "src": "extractor.ts-loader.js"
+  },
+  "src/background/index.ts": {
+    "file": "assets/index.ts-ZvOctxVj.js",
+    "name": "index.ts",
+    "src": "src/background/index.ts",
+    "isEntry": true,
+    "imports": [
+      "_index.browser-jmXnl6ZB.js",
+      "_logger-CvfM-6aa.js",
+      "_analytics-XA79Jluk.js",
+      "__commonjsHelpers-BosuxZz1.js"
+    ]
+  },
+  "src/content/extractor.ts": {
+    "file": "assets/extractor.ts-Cucy8zre.js",
+    "name": "extractor.ts",
+    "src": "src/content/extractor.ts",
+    "isEntry": true,
+    "imports": [
+      "_logger-CvfM-6aa.js",
+      "_index.browser-jmXnl6ZB.js"
+    ]
+  },
+  "src/content/toutiao.ts": {
+    "file": "assets/toutiao.ts-Brq6w7IU.js",
+    "name": "toutiao.ts",
+    "src": "src/content/toutiao.ts",
+    "isEntry": true,
+    "imports": [
+      "_logger-CvfM-6aa.js"
+    ]
+  },
+  "src/content/weixin-editor.ts": {
+    "file": "assets/weixin-editor.ts-pcC4u-Av.js",
+    "name": "weixin-editor.ts",
+    "src": "src/content/weixin-editor.ts",
+    "isEntry": true,
+    "imports": [
+      "_logger-CvfM-6aa.js"
+    ]
+  },
+  "src/content/weixin.ts": {
+    "file": "assets/weixin.ts-DM4ajTxm.js",
+    "name": "weixin.ts",
+    "src": "src/content/weixin.ts",
+    "isEntry": true
+  },
+  "src/editor/index.html": {
+    "file": "assets/editor-BxGUgPCO.js",
+    "name": "editor",
+    "src": "src/editor/index.html",
+    "isEntry": true,
+    "imports": [
+      "_globals-DmOqlBAC.js",
+      "_logger-CvfM-6aa.js",
+      "__commonjsHelpers-BosuxZz1.js"
+    ]
+  },
+  "src/lib/reader/Readability.js": {
+    "file": "assets/Readability.js-DC-iE2S6.js",
+    "name": "Readability.js",
+    "src": "src/lib/reader/Readability.js",
+    "isEntry": true
+  },
+  "src/lib/reader/reader.js": {
+    "file": "assets/reader.js-Cie-k7Ey.js",
+    "name": "reader.js",
+    "src": "src/lib/reader/reader.js",
+    "isEntry": true
+  },
+  "src/popup/index.html": {
+    "file": "assets/popup-CxDw5Zvb.js",
+    "name": "popup",
+    "src": "src/popup/index.html",
+    "isEntry": true,
+    "imports": [
+      "_globals-DmOqlBAC.js",
+      "__commonjsHelpers-BosuxZz1.js",
+      "_analytics-XA79Jluk.js",
+      "_logger-CvfM-6aa.js"
+    ]
+  },
+  "toutiao.ts-loader.js": {
+    "file": "assets/toutiao.ts-loader-DpEsQ3dD.js",
+    "src": "toutiao.ts-loader.js"
+  },
+  "weixin-editor.ts-loader.js": {
+    "file": "assets/weixin-editor.ts-loader-ZIiQxvot.js",
+    "src": "weixin-editor.ts-loader.js"
+  }
+}

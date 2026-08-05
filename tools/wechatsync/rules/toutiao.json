@@ -1,0 +1,25 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.toutiao.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.toutiao.com/profile_v4/graphic/publish"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.toutiao.com",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

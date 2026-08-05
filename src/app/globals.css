@@ -1,26 +1,230 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #f3efe6;
+  --bg-deep: #e8e0d0;
+  --ink: #1c1915;
+  --muted: #6b6358;
+  --line: #d4cbb8;
+  --card: #faf7f0;
+  --accent: #0f5c4c;
+  --accent-soft: #d8ebe4;
+  --warn: #9a3412;
+  --danger: #9f1239;
+  --ok: #166534;
+  --font-display: "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif SC",
+    "Source Han Serif SC", serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", "Menlo", "Consolas", monospace;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, #dfece7 0%, transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 0%, #efe4d2 0%, transparent 50%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  font-family: var(--font-display), "Songti SC", "Noto Serif SC", serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  width: min(1100px, calc(100% - 2rem));
+  margin: 0 auto;
+}
+
+.card {
+  background: color-mix(in srgb, var(--card) 92%, white);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0.55rem 1.1rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #f5faf8;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.btn-danger {
+  background: #fff1f2;
+  color: var(--danger);
+  border-color: #fecdd3;
+}
+
+.field {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #fffdf9;
+  border-radius: 12px;
+  padding: 0.75rem 0.9rem;
+  color: var(--ink);
+  outline: none;
+}
+
+.field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+.badge-ok {
+  background: #dcfce7;
+  color: var(--ok);
+}
+
+.badge-warn {
+  background: #ffedd5;
+  color: var(--warn);
+}
+
+.badge-muted {
+  background: #eee8dc;
+  color: var(--muted);
+}
+
+.badge-danger {
+  background: #ffe4e6;
+  color: var(--danger);
+}
+
+.badge-run {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* TipTap rich text */
+.rich-editor {
+  font-size: 1.02rem;
+  line-height: 1.75;
+  color: var(--ink);
+}
+
+.rich-editor p {
+  margin: 0 0 0.85em;
+}
+
+.rich-editor mark {
+  border-radius: 2px;
+  padding: 0 0.15em;
+}
+
+.rich-editor u {
+  text-decoration: underline;
+}
+
+.rich-editor h1 {
+  margin: 1.3em 0 0.55em;
+  font-size: 1.55rem;
+  font-weight: 650;
+}
+
+.rich-editor [style*="color"] {
+  /* preserve pasted inline colors */
+}
+
+.rich-editor h3 {
+  margin: 1em 0 0.4em;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.rich-editor ul,
+.rich-editor ol {
+  margin: 0 0 0.85em;
+  padding-left: 1.4em;
+}
+
+.rich-editor blockquote {
+  margin: 0 0 0.85em;
+  padding-left: 0.9em;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+.rich-editor a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.rich-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 0.6em 0;
+}
+
+.rich-editor hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.2em 0;
+}
+
+.rich-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+.tiptap:focus {
+  outline: none;
 }

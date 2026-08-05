@@ -1,0 +1,203 @@
+{
+  "manifest_version": 3,
+  "name": "文章同步助手",
+  "description": "一键同步文章到知乎、头条、掘金等 20+ 平台，支持 WordPress 等自建站",
+  "version": "2.0.0",
+  "icons": {
+    "16": "assets/icon-16.png",
+    "48": "assets/icon-48.png",
+    "128": "assets/icon-128.png"
+  },
+  "action": {
+    "default_icon": "assets/icon-48.png",
+    "default_popup": "src/popup/index.html"
+  },
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "cookies",
+    "notifications",
+    "offscreen",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
+    "scripting",
+    "tabs",
+    "alarms",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker-loader.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "assets/weixin.ts-DM4ajTxm.js"
+      ],
+      "matches": [
+        "https://mp.weixin.qq.com/s/*",
+        "https://mp.weixin.qq.com/s?*"
+      ],
+      "run_at": "document_end"
+    },
+    {
+      "js": [
+        "assets/weixin-editor.ts-loader-ZIiQxvot.js"
+      ],
+      "matches": [
+        "https://mp.weixin.qq.com/cgi-bin/appmsg*"
+      ],
+      "run_at": "document_end"
+    },
+    {
+      "js": [
+        "assets/toutiao.ts-loader-DpEsQ3dD.js"
+      ],
+      "matches": [
+        "https://mp.toutiao.com/*"
+      ],
+      "run_at": "document_end"
+    },
+    {
+      "js": [
+        "assets/reader.js-Cie-k7Ey.js",
+        "assets/Readability.js-DC-iE2S6.js",
+        "assets/extractor.ts-loader-BH2EWQja.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "resources": [
+        "assets/*",
+        "src/editor/index.html"
+      ],
+      "use_dynamic_url": false
+    },
+    {
+      "matches": [
+        "https://mp.weixin.qq.com/*",
+        "https://mp.weixin.qq.com/*"
+      ],
+      "resources": [
+        "assets/weixin.ts-DM4ajTxm.js"
+      ],
+      "use_dynamic_url": false
+    },
+    {
+      "matches": [
+        "https://mp.weixin.qq.com/*"
+      ],
+      "resources": [
+        "assets/logger-CvfM-6aa.js",
+        "assets/weixin-editor.ts-pcC4u-Av.js"
+      ],
+      "use_dynamic_url": false
+    },
+    {
+      "matches": [
+        "https://mp.toutiao.com/*"
+      ],
+      "resources": [
+        "assets/logger-CvfM-6aa.js",
+        "assets/toutiao.ts-Brq6w7IU.js"
+      ],
+      "use_dynamic_url": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "resources": [
+        "assets/reader.js-Cie-k7Ey.js",
+        "assets/Readability.js-DC-iE2S6.js",
+        "assets/logger-CvfM-6aa.js",
+        "assets/index.browser-jmXnl6ZB.js",
+        "assets/extractor.ts-Cucy8zre.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "zhihu_rules",
+        "enabled": true,
+        "path": "rules/zhihu.json"
+      },
+      {
+        "id": "juejin_rules",
+        "enabled": true,
+        "path": "rules/juejin.json"
+      },
+      {
+        "id": "toutiao_rules",
+        "enabled": true,
+        "path": "rules/toutiao.json"
+      },
+      {
+        "id": "weibo_rules",
+        "enabled": true,
+        "path": "rules/weibo.json"
+      },
+      {
+        "id": "bilibili_rules",
+        "enabled": true,
+        "path": "rules/bilibili.json"
+      },
+      {
+        "id": "baijiahao_rules",
+        "enabled": true,
+        "path": "rules/baijiahao.json"
+      },
+      {
+        "id": "csdn_rules",
+        "enabled": true,
+        "path": "rules/csdn.json"
+      },
+      {
+        "id": "yuque_rules",
+        "enabled": true,
+        "path": "rules/yuque.json"
+      },
+      {
+        "id": "douban_rules",
+        "enabled": true,
+        "path": "rules/douban.json"
+      },
+      {
+        "id": "sohu_rules",
+        "enabled": true,
+        "path": "rules/sohu.json"
+      },
+      {
+        "id": "xueqiu_rules",
+        "enabled": true,
+        "path": "rules/xueqiu.json"
+      },
+      {
+        "id": "weixin_rules",
+        "enabled": true,
+        "path": "rules/weixin.json"
+      },
+      {
+        "id": "woshipm_rules",
+        "enabled": true,
+        "path": "rules/woshipm.json"
+      }
+    ]
+  }
+}

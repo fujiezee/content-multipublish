@@ -1,0 +1,25 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://member.bilibili.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://member.bilibili.com/platform/upload/text"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "api.bilibili.com",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]
