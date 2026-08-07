@@ -416,6 +416,116 @@ async function selectAiCover(page: Page): Promise<boolean> {
   return true;
 }
 
+/** Normalize button label for exact matching (百家号 footer has both「发布」and「定时发布」). */
+function normalizeBtnText(raw: string) {
+  return raw.replace(/\s+/g, "").trim();
+}
+
+async function dismissScheduleModal(page: Page) {
+  const modal = page
+    .locator(
+      [
+        '.cheetah-modal:has-text("定时发文")',
+        '.cheetah-modal:has-text("定时发布")',
+        '[role="dialog"]:has-text("定时发文")',
+        '[role="dialog"]:has-text("定时发布")',
+      ].join(", "),
+    )
+    .first();
+  if ((await modal.count()) === 0) return false;
+  if (!(await modal.isVisible().catch(() => false))) return false;
+
+  const cancel = modal.locator('button:has-text("取消")').first();
+  if (await cancel.isVisible().catch(() => false)) {
+    await cancel.click({ force: true }).catch(() => undefined);
+  } else {
+    await modal
+      .locator('[aria-label="关闭"], .cheetah-modal-close, button:has-text("×")')
+      .first()
+      .click({ force: true })
+      .catch(() => undefined);
+  }
+  await page.waitForTimeout(500);
+  return true;
+}
+
+/**
+ * Click the immediate「发布」button — never「定时发布」.
+ * Playwright :has-text("发布") also matches「定时发布」, which opened the schedule dialog.
+ */
+async function clickImmediatePublishButton(page: Page) {
+  await dismissScheduleModal(page);
+
+  const scoped = page.locator(
+    [
+      ".editor-component-operator button",
+      ".editor-component-operator .cheetah-btn",
+      "footer button",
+      '[class*="operator"] button',
+      '[class*="operator"] .cheetah-btn',
+    ].join(", "),
+  );
+  const n = await scoped.count();
+  for (let i = 0; i < n; i++) {
+    const btn = scoped.nth(i);
+    if (!(await btn.isVisible().catch(() => false))) continue;
+    if (await btn.isDisabled().catch(() => false)) continue;
+    const text = normalizeBtnText(
+      (await btn.innerText().catch(() => "")) || "",
+    );
+    if (text !== "发布") continue;
+    await btn.click({ timeout: 10_000, force: true });
+    return true;
+  }
+
+  // Fallback: role name exact match (does not match 定时发布)
+  const byRole = page.getByRole("button", { name: "发布", exact: true });
+  const roleCount = await byRole.count();
+  for (let i = roleCount - 1; i >= 0; i--) {
+    const btn = byRole.nth(i);
+    if (!(await btn.isVisible().catch(() => false))) continue;
+    if (await btn.isDisabled().catch(() => false)) continue;
+    await btn.click({ timeout: 10_000, force: true });
+    return true;
+  }
+
+  return false;
+}
+
+async function clickConfirmPublish(page: Page) {
+  await dismissScheduleModal(page);
+
+  const preferredLabels = ["确认发布", "确定发布", "立即发布", "确认"];
+  const candidates = page.locator(
+    'button, .cheetah-btn, [role="button"], div.cheetah-btn',
+  );
+  const n = await candidates.count();
+  for (const label of preferredLabels) {
+    for (let i = n - 1; i >= 0; i--) {
+      const btn = candidates.nth(i);
+      if (!(await btn.isVisible().catch(() => false))) continue;
+      if (await btn.isDisabled().catch(() => false)) continue;
+      const text = normalizeBtnText(
+        (await btn.innerText().catch(() => "")) || "",
+      );
+      if (text !== label) continue;
+      // Never confirm inside the schedule dialog
+      const inSchedule = await btn
+        .evaluate((el) => {
+          const modal = el.closest(".cheetah-modal, [role='dialog']");
+          const t = modal?.textContent || "";
+          return /定时发文|定时发布/.test(t);
+        })
+        .catch(() => false);
+      if (inSchedule) continue;
+      await btn.click({ timeout: 5000, force: true }).catch(() => undefined);
+      await page.waitForTimeout(800);
+      return true;
+    }
+  }
+  return false;
+}
+
 async function clickPublishFlow(page: Page) {
   await dismissOverlays(page);
 
@@ -429,41 +539,31 @@ async function clickPublishFlow(page: Page) {
     console.warn("[baijiahao] AI cover not set, continuing to publish click");
   }
 
-  const primary = [
-    '.editor-component-operator button:has-text("发布")',
-    'button:has-text("发布"):not(:has-text("定时"))',
-    'div.cheetah-btn:has-text("发布")',
-    '[class*="publish"]:has-text("发布")',
-    ".publish-btn",
-  ];
-
-  await clickFirstVisible(page, primary);
+  const clicked = await clickImmediatePublishButton(page);
+  if (!clicked) {
+    // Last resort — still exclude 定时 via exact filter helper above failed
+    await clickFirstVisible(page, [
+      'button:has-text("发布"):not(:has-text("定时"))',
+    ]);
+  }
   await page.waitForTimeout(1500);
   await dismissOverlays(page);
 
-  // If publish opens another cover prompt, try AI cover once more
-  if ((await page.locator('text=选择封面').count()) > 0) {
-    await selectAiCover(page).catch(() => undefined);
-    await clickFirstVisible(page, primary).catch(() => undefined);
+  // If we landed on schedule dialog by mistake, close and click 发布 again
+  if (await dismissScheduleModal(page)) {
+    await clickImmediatePublishButton(page);
     await page.waitForTimeout(1000);
   }
 
-  const confirms = [
-    'button:has-text("确认发布")',
-    'button:has-text("确定发布")',
-    'button:has-text("确认")',
-    'button:has-text("确定")',
-    'button:has-text("发布"):not(:has-text("定时"))',
-  ];
-  for (const sel of confirms) {
-    const btn = page.locator(sel).last();
-    if ((await btn.count()) === 0) continue;
-    if (!(await btn.isVisible().catch(() => false))) continue;
-    if (await btn.isDisabled().catch(() => false)) continue;
-    await btn.click({ timeout: 5000 }).catch(() => undefined);
+  // If publish opens another cover prompt, try AI cover once more
+  if ((await page.locator("text=选择封面").count()) > 0) {
+    await selectAiCover(page).catch(() => undefined);
+    await clickImmediatePublishButton(page);
     await page.waitForTimeout(1000);
-    break;
   }
+
+  await clickConfirmPublish(page);
+  await dismissScheduleModal(page);
 }
 
 async function hasSuccessToast(page: Page) {

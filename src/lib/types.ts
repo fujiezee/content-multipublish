@@ -81,6 +81,106 @@ export interface PublishResult {
   keepOpen?: boolean;
 }
 
+/** 语料库条目分类 */
+export type CorpusCategory = "brand" | "story" | "product" | "style" | "other";
+
+export interface CorpusItem {
+  id: string;
+  title: string;
+  category: CorpusCategory;
+  tags: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** AI 文案类型 */
+export type CopywritingKind =
+  | "brand_intro"
+  | "product"
+  | "social"
+  | "article"
+  | "slogan";
+
+export const CORPUS_CATEGORIES: {
+  id: CorpusCategory;
+  label: string;
+  hint: string;
+}[] = [
+  { id: "brand", label: "品牌", hint: "定位、价值观、Slogan、品牌故事" },
+  { id: "story", label: "故事", hint: "个人经历、客户案例、创业复盘" },
+  { id: "product", label: "产品", hint: "功能、卖点、参数、使用场景" },
+  { id: "style", label: "风格", hint: "范文、语气参考、禁用词" },
+  { id: "other", label: "其他", hint: "任意可引用素材" },
+];
+
+export const COPYWRITING_KINDS: {
+  id: CopywritingKind;
+  label: string;
+  hint: string;
+}[] = [
+  { id: "brand_intro", label: "品牌介绍", hint: "官网 About、一句话介绍" },
+  { id: "product", label: "产品文案", hint: "卖点、功能说明、落地页" },
+  { id: "social", label: "社媒短帖", hint: "微博、小红书、朋友圈" },
+  { id: "article", label: "长文初稿", hint: "公众号、专栏文章大纲+正文" },
+  { id: "slogan", label: "标语口号", hint: "多条 Slogan 备选" },
+];
+
+/** GEO 挖词：搜索意图分类 */
+export type GeoKeywordIntent =
+  | "informational"
+  | "howto"
+  | "comparison"
+  | "commercial"
+  | "local"
+  | "question";
+
+export interface GeoKeywordMine {
+  id: string;
+  seed: string;
+  context: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GeoKeyword {
+  id: string;
+  mine_id: string;
+  keyword: string;
+  title: string;
+  intent: GeoKeywordIntent;
+  angle: string;
+  norm_key: string;
+  /** @deprecated use geo_keyword_articles */
+  article_id: string | null;
+  created_at: string;
+}
+
+/** AI 写文与长尾词的关联记录（同一长尾词可有多篇） */
+export interface GeoKeywordArticle {
+  id: string;
+  keyword_id: string;
+  article_id: string;
+  brief: string;
+  created_at: string;
+}
+
+export type GeoKeywordArticleWithTitle = GeoKeywordArticle & {
+  article_title: string;
+};
+
+export const GEO_KEYWORD_INTENTS: {
+  id: GeoKeywordIntent;
+  label: string;
+}[] = [
+  { id: "informational", label: "科普/认知" },
+  { id: "howto", label: "教程/方法" },
+  { id: "comparison", label: "对比/评测" },
+  { id: "commercial", label: "选购/方案" },
+  { id: "local", label: "场景/人群" },
+  { id: "question", label: "问答/解惑" },
+];
+
 export const PLATFORMS: {
   id: PlatformId;
   name: string;

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createArticle, listArticles } from "@/lib/db";
+import { createArticle, linkGeoKeywordArticle, listArticles } from "@/lib/db";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -21,5 +21,11 @@ export async function POST(req: Request) {
     updated_at: now,
   };
   createArticle(article);
+  const geoKeywordId =
+    typeof body.geoKeywordId === "string" ? body.geoKeywordId.trim() : "";
+  if (geoKeywordId) {
+    const brief = typeof body.geoBrief === "string" ? body.geoBrief : "";
+    linkGeoKeywordArticle(geoKeywordId, article.id, brief);
+  }
   return NextResponse.json({ article }, { status: 201 });
 }

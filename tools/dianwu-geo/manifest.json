@@ -33,7 +33,45 @@
     "service_worker": "service-worker-loader.js",
     "type": "module"
   },
+  "externally_connectable": {
+    "matches": [
+      "http://localhost/*",
+      "http://127.0.0.1/*",
+      "https://localhost/*",
+      "https://127.0.0.1/*",
+      "https://dianwu.ai/*"
+    ]
+  },
   "content_scripts": [
+    {
+      "js": [
+        "page-sync-mark.js"
+      ],
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*",
+        "http://*/*",
+        "https://dianwu.ai/*"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "js": [
+        "page-sync-api.js"
+      ],
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*",
+        "http://*/*",
+        "https://dianwu.ai/*"
+      ],
+      "run_at": "document_start"
+    },
     {
       "js": [
         "assets/weixin.ts-DM4ajTxm.js"
@@ -82,7 +120,8 @@
       ],
       "resources": [
         "assets/*",
-        "src/editor/index.html"
+        "src/editor/index.html",
+        "inject-api.js"
       ],
       "use_dynamic_url": false
     },
@@ -197,6 +236,11 @@
         "id": "woshipm_rules",
         "enabled": true,
         "path": "rules/woshipm.json"
+      },
+      {
+        "id": "segmentfault_rules",
+        "enabled": true,
+        "path": "rules/segmentfault.json"
       }
     ]
   }

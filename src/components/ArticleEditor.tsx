@@ -1,13 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Article, PlatformId, PlatformSession, PublishJob } from "@/lib/types";
 import { PLATFORMS } from "@/lib/types";
 import { JobBadge } from "@/components/StatusBadge";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { toEditorHtml } from "@/lib/content/adapt";
-import { syncWithDianwuGeo, DIANWU_GEO_PRODUCT_NAME } from "@/lib/dianwu-geo";
+import {
+  beginOpenDianwuGeoPanel,
+  stashArticleForDianwuGeo,
+  formatDianwuGeoOpenMessage,
+  getExtensionIdFromDom,
+  isDianwuGeoExtensionPresent,
+  pingDianwuGeoExtension,
+  waitForDianwuGeoExtension,
+  DIANWU_GEO_PRODUCT_NAME,
+  type DianwuGeoOpenResult,
+} from "@/lib/dianwu-geo";
 
 export function ArticleEditor({ id }: { id: string }) {
   const router = useRouter();
@@ -34,39 +44,100 @@ export function ArticleEditor({ id }: { id: string }) {
   const [syncingExt, setSyncingExt] = useState(false);
   const [jobs, setJobs] = useState<PublishJob[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [extensionReady, setExtensionReady] = useState<boolean | null>(null);
+  const [clientMounted, setClientMounted] = useState(false);
+  const manualSyncRunningRef = useRef(false);
+  const manualSyncWaitRef = useRef<Promise<DianwuGeoOpenResult> | null>(null);
+  const jobsLoadingRef = useRef(false);
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/articles/${id}`);
-    if (!res.ok) {
-      router.push("/");
-      return;
+    try {
+      const res = await fetch(`/api/articles/${id}`, { cache: "no-store" });
+      if (!res.ok) {
+        router.push("/");
+        return;
+      }
+      const data = await res.json();
+      const a = data.article as Article;
+      const html = toEditorHtml(a.body);
+      setArticle({ ...a, body: html });
+      setTitle(a.title);
+      setBody(html);
+      setSummary(a.summary);
+      setCoverPath(a.cover_path);
+    } catch {
+      // Transient network errors (e.g. dev server restart) — keep current editor state.
     }
-    const data = await res.json();
-    const a = data.article as Article;
-    const html = toEditorHtml(a.body);
-    setArticle({ ...a, body: html });
-    setTitle(a.title);
-    setBody(html);
-    setSummary(a.summary);
-    setCoverPath(a.cover_path);
   }, [id, router]);
 
   const loadJobs = useCallback(async () => {
-    const res = await fetch(`/api/articles/${id}/jobs`);
-    const data = await res.json();
-    setJobs(data.jobs ?? []);
+    if (jobsLoadingRef.current) return;
+    jobsLoadingRef.current = true;
+    try {
+      const res = await fetch(`/api/articles/${id}/jobs`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setJobs(data.jobs ?? []);
+    } catch {
+      // Polling must not crash the page when the API is briefly unavailable.
+    } finally {
+      jobsLoadingRef.current = false;
+    }
   }, [id]);
 
   useEffect(() => {
+    setArticle(null);
+    setTitle("");
+    setBody("");
+    setSummary("");
+    setCoverPath(null);
+    setJobs([]);
+    manualSyncWaitRef.current = null;
     void load();
     void loadJobs();
-  }, [load, loadJobs]);
+  }, [id, load, loadJobs]);
 
   useEffect(() => {
-    if (!jobs.some((j) => j.status === "pending" || j.status === "running")) return;
-    const t = setInterval(() => void loadJobs(), 2000);
-    return () => clearInterval(t);
-  }, [jobs, loadJobs]);
+    if (!article) return;
+    const timer = window.setTimeout(() => {
+      stashArticleForDianwuGeo(buildManualSyncArticle());
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [article, title, body, summary, coverPath]);
+
+  useEffect(() => {
+    if (!article) return;
+    const pageTitle = title.trim() || "未命名";
+    const previousTitle = document.title;
+    document.title = pageTitle;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [article, title]);
+
+  useEffect(() => {
+    setClientMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!clientMounted) return;
+    let cancelled = false;
+    const check = async () => {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        if (cancelled) return;
+        if (await pingDianwuGeoExtension(2000)) {
+          if (!cancelled) setExtensionReady(true);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 350));
+      }
+      if (!cancelled) setExtensionReady(false);
+    };
+    void check();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, clientMounted]);
 
   const dirty = useMemo(() => {
     if (!article) return false;
@@ -139,38 +210,80 @@ export function ArticleEditor({ id }: { id: string }) {
     if (data.path) setCoverPath(data.path);
   }
 
-  /** Pull up 点物GEO 文章多平台同步助手 Chrome extension sync dialog. */
-  async function syncViaExtension() {
+  function buildManualSyncArticle() {
+    let thumb: string | undefined;
+    if (coverPath) {
+      if (coverPath.startsWith("http")) {
+        thumb = coverPath;
+      } else {
+        const name = coverPath.split("/").pop();
+        thumb = name
+          ? `${window.location.origin}/api/uploads/${name}`
+          : undefined;
+      }
+    }
+    return {
+      title: title.trim() || "未命名",
+      desc: summary.trim() || undefined,
+      content: body || "<p></p>",
+      thumb,
+    };
+  }
+
+  useEffect(() => {
+    if (!jobs.some((j) => j.status === "pending" || j.status === "running")) return;
+    const t = setInterval(() => void loadJobs(), 2000);
+    return () => clearInterval(t);
+  }, [jobs, loadJobs]);
+
+  async function runManualSync() {
+    if (manualSyncRunningRef.current || syncingExt) return;
+    manualSyncRunningRef.current = true;
     setSyncingExt(true);
     setMessage(null);
-    try {
-      if (dirty) await save();
-      let thumb: string | undefined;
-      if (coverPath) {
-        if (coverPath.startsWith("http")) {
-          thumb = coverPath;
-        } else {
-          const name = coverPath.split("/").pop();
-          thumb = name
-            ? `${window.location.origin}/api/uploads/${name}`
-            : undefined;
-        }
+
+    if (!isDianwuGeoExtensionPresent()) {
+      const ready = await waitForDianwuGeoExtension(3_000);
+      if (!ready) {
+        const domMarker = getExtensionIdFromDom();
+        const origin = typeof window !== "undefined" ? window.location.origin : "";
+        setExtensionReady(false);
+        setMessage(
+          domMarker
+            ? `${DIANWU_GEO_PRODUCT_NAME}已连接但页面桥接未就绪，请硬刷新（Cmd+Shift+R）后重试。`
+            : `未检测到${DIANWU_GEO_PRODUCT_NAME}。请确认：① chrome://extensions 已加载「未打包的扩展程序」目录 tools/dianwu-geo（不是 tools/wechatsync）；② 扩展已启用；③ 用 ${origin.includes("localhost") ? origin : "http://localhost:3000"} 打开本页；④ 加载扩展后硬刷新本页。`,
+        );
+        manualSyncRunningRef.current = false;
+        setSyncingExt(false);
+        return;
       }
-      await syncWithDianwuGeo({
-        title: title.trim() || "未命名",
-        desc: summary.trim() || undefined,
-        content: body || "<p></p>",
-        thumb,
-      });
-      setMessage(
-        `已拉起${DIANWU_GEO_PRODUCT_NAME}。请在弹窗里勾选平台；目标平台需先在对应网站登录。`,
-      );
+    }
+
+    const wait =
+      manualSyncWaitRef.current ??
+      beginOpenDianwuGeoPanel(buildManualSyncArticle()).wait;
+    manualSyncWaitRef.current = null;
+    stashArticleForDianwuGeo(buildManualSyncArticle());
+    const saveTask = dirty ? save() : Promise.resolve();
+
+    try {
+      const [result] = await Promise.all([wait, saveTask]);
+      setExtensionReady(true);
+      setMessage(formatDianwuGeoOpenMessage(result));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setMessage(msg);
     } finally {
+      manualSyncRunningRef.current = false;
       setSyncingExt(false);
     }
+  }
+
+  function handleManualSyncPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+    if (e.button !== 0 || manualSyncRunningRef.current || !title.trim()) return;
+    const { wait } = beginOpenDianwuGeoPanel(buildManualSyncArticle());
+    manualSyncWaitRef.current = wait;
+    void runManualSync();
   }
 
   if (!article) {
@@ -191,15 +304,26 @@ export function ArticleEditor({ id }: { id: string }) {
             {saving ? "保存中…" : dirty ? "保存" : "已保存"}
           </button>
           <button
+            type="button"
             className="btn btn-ghost"
-            onClick={() => void syncViaExtension()}
+            onPointerDown={handleManualSyncPointerDown}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                void runManualSync();
+              }
+            }}
             disabled={syncingExt || !title.trim()}
-            title={`通过 Chrome「${DIANWU_GEO_PRODUCT_NAME}」扩展分发到更多平台（dianwu.ai）`}
+            title={
+              clientMounted && extensionReady === false
+                ? `未检测到扩展，请重新加载 tools/dianwu-geo`
+                : `打开浏览器扩展「${DIANWU_GEO_PRODUCT_NAME}」面板（建议先固定到工具栏）`
+            }
           >
-            {syncingExt ? "拉起中…" : "多平台同步"}
+            {syncingExt ? "拉起中…" : "手动多平台同步"}
           </button>
           <button className="btn btn-primary" onClick={openPublish}>
-            发布到平台
+            全自动发布到平台
           </button>
         </div>
       </div>
@@ -215,15 +339,29 @@ export function ArticleEditor({ id }: { id: string }) {
           className="field text-2xl font-semibold"
           placeholder="文章标题"
           value={title}
+          data-dwgeo-article-title
+          data-value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
         <input
           className="field"
           placeholder="摘要（可选，用于部分平台简介）"
           value={summary}
+          data-dwgeo-article-summary
           onChange={(e) => setSummary(e.target.value)}
         />
         <div className="flex flex-wrap items-center gap-3">
+          {coverPath && (
+            <span
+              className="hidden"
+              aria-hidden
+              data-dwgeo-article-cover={
+                coverPath.startsWith("http")
+                  ? coverPath
+                  : `/api/uploads/${coverPath.split("/").pop()}`
+              }
+            />
+          )}
           <label className="btn btn-ghost cursor-pointer">
             上传封面
             <input
@@ -246,11 +384,13 @@ export function ArticleEditor({ id }: { id: string }) {
             </span>
           )}
         </div>
-        <RichTextEditor
-          value={body}
-          onChange={setBody}
-          placeholder="在这里写正文，支持标题、加粗、列表、链接、图片…"
-        />
+        <div data-dwgeo-article-body>
+          <RichTextEditor
+            value={body}
+            onChange={setBody}
+            placeholder="在这里写正文，支持标题、加粗、列表、链接、图片…"
+          />
+        </div>
       </div>
 
       {jobs.length > 0 && (
@@ -287,13 +427,15 @@ export function ArticleEditor({ id }: { id: string }) {
       )}
 
       {showPublish && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-          <div className="card w-full max-w-lg p-6 shadow-2xl">
-            <h2 className="text-xl font-semibold">选择发布平台</h2>
-            <p className="mt-1 text-sm text-[var(--muted)]">
-              将串行打开发布浏览器窗口，请保持本机可用
-            </p>
-            <ul className="mt-4 space-y-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/35 p-4">
+          <div className="card flex max-h-[min(85vh,720px)] w-full max-w-lg flex-col p-0 shadow-2xl">
+            <div className="shrink-0 border-b border-[var(--line)] px-6 py-5">
+              <h2 className="text-xl font-semibold">选择发布平台</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                将串行打开发布浏览器窗口，请保持本机可用
+              </p>
+            </div>
+            <ul className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4">
               {PLATFORMS.map((p) => {
                 const session = sessions.find((s) => s.platform === p.id);
                 const connected = session?.status === "connected";
@@ -331,7 +473,7 @@ export function ArticleEditor({ id }: { id: string }) {
                 );
               })}
             </ul>
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-6 py-4">
               <button className="btn btn-ghost" onClick={() => setShowPublish(false)}>
                 取消
               </button>

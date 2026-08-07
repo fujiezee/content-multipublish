@@ -9,6 +9,7 @@ import Image from "@tiptap/extension-image";
 import Underline from "@tiptap/extension-underline";
 import { TextStyle, Color } from "@tiptap/extension-text-style";
 import Highlight from "@tiptap/extension-highlight";
+import { TableKit } from "@tiptap/extension-table";
 import { cleanPastedHtml } from "@/lib/content/paste";
 
 type Props = {
@@ -75,6 +76,9 @@ export function RichTextEditor({
       Image.configure({
         allowBase64: true,
         inline: false,
+      }),
+      TableKit.configure({
+        table: { resizable: true },
       }),
     ],
     content: value || "",
@@ -241,6 +245,40 @@ export function RichTextEditor({
         >
           —
         </ToolbarButton>
+        <ToolbarButton
+          title="插入表格"
+          onClick={() =>
+            editor
+              .chain()
+              .focus()
+              .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+              .run()
+          }
+        >
+          表格
+        </ToolbarButton>
+        {editor.isActive("table") && (
+          <>
+            <ToolbarButton
+              title="删除表格"
+              onClick={() => editor.chain().focus().deleteTable().run()}
+            >
+              删表
+            </ToolbarButton>
+            <ToolbarButton
+              title="在下方插入行"
+              onClick={() => editor.chain().focus().addRowAfter().run()}
+            >
+              +行
+            </ToolbarButton>
+            <ToolbarButton
+              title="在右侧插入列"
+              onClick={() => editor.chain().focus().addColumnAfter().run()}
+            >
+              +列
+            </ToolbarButton>
+          </>
+        )}
         <span className="mx-1 h-4 w-px bg-[var(--line)]" />
         <ToolbarButton
           title="插入链接"

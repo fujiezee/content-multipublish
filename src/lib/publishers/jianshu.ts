@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page, Response } from "playwright";
 import {
   captureDebugScreenshot,
   clickFirstVisible,
@@ -305,29 +305,177 @@ async function clickPublish(page: Page) {
   }
 }
 
-async function waitForPublished(page: Page, timeoutMs: number): Promise<string | null> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    for (const p of page.context().pages()) {
-      const u = p.url();
-      if (isPublishedUrl(u)) return u;
-    }
-    const toast = page.locator("text=/发布成功|已发布/");
-    if ((await toast.count()) > 0) {
-      await page.waitForTimeout(1500);
-      for (const p of page.context().pages()) {
-        if (isPublishedUrl(p.url())) return p.url();
+function slugToUrl(slug: string) {
+  return `https://www.jianshu.com/p/${slug.replace(/^\/+/, "")}`;
+}
+
+function attachJianshuPublishWatcher(page: Page) {
+  let slug: string | null = null;
+
+  const onResponse = async (response: Response) => {
+    const url = response.url();
+    if (!/jianshu\.com/i.test(url)) return;
+    if (!/author\/notes|publicize|share/i.test(url)) return;
+    try {
+      const json = (await response.json().catch(() => null)) as {
+        slug?: string;
+        shared?: boolean;
+        first_shared_at?: string | null;
+      } | null;
+      if (!json?.slug) return;
+      if (
+        json.shared === true ||
+        json.first_shared_at ||
+        /publicize|share/i.test(url)
+      ) {
+        slug = json.slug;
       }
+    } catch {
+      // ignore parse errors
     }
-    await page.waitForTimeout(1000);
+  };
+
+  page.on("response", onResponse);
+  return {
+    getSlug: () => slug,
+    dispose: () => page.off("response", onResponse),
+  };
+}
+
+async function extractPublishedUrlFromPage(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const isArticle = (href: string) =>
+      /jianshu\.com\/p\/[a-zA-Z0-9]+/i.test(href);
+
+    const pick = (links: HTMLAnchorElement[]) => {
+      for (const a of links) {
+        const href = a.href || "";
+        if (!isArticle(href)) continue;
+        const text = (a.textContent || "").trim();
+        if (/查看|文章|前往/i.test(text)) return href.split("?")[0];
+      }
+      for (const a of links) {
+        const href = a.href || "";
+        if (isArticle(href)) return href.split("?")[0];
+      }
+      return null;
+    };
+
+    const modalRoots = [
+      ...document.querySelectorAll(
+        '[class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"], [class*="toast"], [class*="Toast"], [role="dialog"]',
+      ),
+    ];
+    for (const root of modalRoots) {
+      const links = [...root.querySelectorAll("a[href]")] as HTMLAnchorElement[];
+      const hit = pick(links);
+      if (hit) return hit;
+    }
+
+    return pick([...document.querySelectorAll("a[href]")] as HTMLAnchorElement[]);
+  });
+}
+
+async function clickViewArticleLink(page: Page): Promise<string | null> {
+  const selectors = [
+    'a:has-text("查看文章")',
+    'button:has-text("查看文章")',
+    'a:has-text("查看")',
+    "text=查看文章",
+  ];
+
+  for (const sel of selectors) {
+    const loc = page.locator(sel).first();
+    if ((await loc.count()) === 0) continue;
+    if (!(await loc.isVisible().catch(() => false))) continue;
+
+    const href = await loc.getAttribute("href").catch(() => null);
+    if (href && /\/p\/[a-zA-Z0-9]+/i.test(href)) {
+      const absolute = href.startsWith("http")
+        ? href
+        : `https://www.jianshu.com${href.startsWith("/") ? href : `/${href}`}`;
+      return absolute.split("?")[0];
+    }
+
+    const popupPromise = page
+      .context()
+      .waitForEvent("page", { timeout: 8000 })
+      .catch(() => null);
+
+    await loc.click({ timeout: 8000 }).catch(() => undefined);
+    const popup = await popupPromise;
+    if (popup) {
+      await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
+      const popupUrl = popup.url();
+      if (isPublishedUrl(popupUrl)) return popupUrl;
+    }
+
+    await page.waitForTimeout(1500);
+    if (isPublishedUrl(page.url())) return page.url();
+    const fromDom = await extractPublishedUrlFromPage(page);
+    if (fromDom) return fromDom;
+    return null;
   }
-  for (const p of page.context().pages()) {
-    if (isPublishedUrl(p.url())) return p.url();
-  }
+
   return null;
 }
 
+async function resolvePublishedUrl(
+  page: Page,
+  watcher: ReturnType<typeof attachJianshuPublishWatcher>,
+): Promise<string | null> {
+  for (const p of page.context().pages()) {
+    const u = p.url();
+    if (isPublishedUrl(u)) return u;
+  }
+
+  const slug = watcher.getSlug();
+  if (slug) return slugToUrl(slug);
+
+  const fromDom = await extractPublishedUrlFromPage(page);
+  if (fromDom) return fromDom;
+
+  return null;
+}
+
+async function waitForPublished(
+  page: Page,
+  watcher: ReturnType<typeof attachJianshuPublishWatcher>,
+  timeoutMs: number,
+): Promise<string | null> {
+  const start = Date.now();
+  let clickedViewLink = false;
+
+  while (Date.now() - start < timeoutMs) {
+    const resolved = await resolvePublishedUrl(page, watcher);
+    if (resolved) return resolved;
+
+    const toast = page.locator("text=/发布成功|已发布|点击查看文章/");
+    if ((await toast.count()) > 0) {
+      if (!clickedViewLink) {
+        clickedViewLink = true;
+        const clickedUrl = await clickViewArticleLink(page);
+        if (clickedUrl) return clickedUrl;
+        await page.waitForTimeout(1200);
+        const afterClick = await resolvePublishedUrl(page, watcher);
+        if (afterClick) return afterClick;
+      }
+
+      const slug = watcher.getSlug();
+      if (slug) return slugToUrl(slug);
+
+      const fromDom = await extractPublishedUrlFromPage(page);
+      if (fromDom) return fromDom;
+    }
+
+    await page.waitForTimeout(800);
+  }
+
+  return resolvePublishedUrl(page, watcher);
+}
+
 async function publish(page: Page, content: PublishContent): Promise<PublishResult> {
+  const watcher = attachJianshuPublishWatcher(page);
   try {
     await page.goto(WRITER_URL, {
       waitUntil: "domcontentloaded",
@@ -360,20 +508,21 @@ async function publish(page: Page, content: PublishContent): Promise<PublishResu
 
     await clickPublish(page);
 
-    let published = await waitForPublished(page, 25_000);
+    let published = await waitForPublished(page, watcher, 25_000);
     if (published) {
       return { success: true, url: published };
     }
 
     await captureDebugScreenshot(page, "jianshu-await-manual");
-    published = await waitForPublished(page, 3 * 60_000);
+    published = await waitForPublished(page, watcher, 90_000);
     if (published) {
       return { success: true, url: published };
     }
 
     return {
       success: false,
-      error: "简书未确认发布成功。请在打开的窗口检查后点「发布文章」",
+      error:
+        "简书已显示发布成功但未拿到文章链接。可点「查看文章」后关闭窗口，任务会记为失败可重试",
       screenshotPath: await captureDebugScreenshot(page, "jianshu-not-published"),
       keepOpen: true,
     };
@@ -385,6 +534,8 @@ async function publish(page: Page, content: PublishContent): Promise<PublishResu
       screenshotPath: await captureDebugScreenshot(page, "jianshu-error"),
       keepOpen: true,
     };
+  } finally {
+    watcher.dispose();
   }
 }
 

@@ -73,10 +73,25 @@ export async function fillBySelectors(
     if ((await loc.count()) === 0) continue;
     if (!(await loc.isVisible().catch(() => false))) continue;
     await loc.click({ timeout: 5000 }).catch(() => undefined);
+    const tag = await loc
+      .evaluate((el) => el.tagName.toLowerCase())
+      .catch(() => "");
+    const editable = await loc
+      .evaluate((el) => (el as HTMLElement).isContentEditable)
+      .catch(() => false);
+    const mod = process.platform === "darwin" ? "Meta" : "Control";
+    if (
+      editable &&
+      tag !== "input" &&
+      tag !== "textarea"
+    ) {
+      await page.keyboard.press(`${mod}+a`);
+      await page.keyboard.type(value, { delay: 12 });
+      return sel;
+    }
     try {
       await loc.fill(value);
     } catch {
-      const mod = process.platform === "darwin" ? "Meta" : "Control";
       await page.keyboard.press(`${mod}+a`);
       await page.keyboard.type(value, { delay: 12 });
     }
@@ -208,6 +223,7 @@ export type SimplePublisherConfig = {
   isEditorUrl?: (url: string) => boolean;
   toastPattern?: RegExp;
   afterFill?: (page: Page, content: PublishContent) => Promise<void>;
+  beforeFill?: (page: Page, content: PublishContent) => Promise<void>;
   notLoginMessage?: string;
 };
 
@@ -262,6 +278,10 @@ export function createSimplePublisher(
           ),
           keepOpen: true,
         };
+      }
+
+      if (cfg.beforeFill) {
+        await cfg.beforeFill(page, content).catch(() => undefined);
       }
 
       const title = content.title.slice(0, cfg.titleMaxLen);

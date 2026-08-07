@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150" role="img" aria-label="��b`M">
+  <rect width="150" height="150" rx="8" fill="#f3f4f6"/>
+  <rect x="24" y="32" width="102" height="72" rx="6" fill="#e5e7eb" stroke="#d1d5db" stroke-width="2"/>
+  <circle cx="52" cy="56" r="10" fill="#d1d5db"/>
+  <path d="M36 92 L62 68 L82 84 L98 70 L114 92 Z" fill="#d1d5db"/>
+  <text x="75" y="128" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#9ca3af">��b</text>
+</svg>

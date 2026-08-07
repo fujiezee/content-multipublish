@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { PublishJob } from "@/lib/types";
 import { PLATFORMS } from "@/lib/types";
@@ -9,11 +9,21 @@ import { JobBadge } from "@/components/StatusBadge";
 export function JobsPanel() {
   const [jobs, setJobs] = useState<PublishJob[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const loadingRef = useRef(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/jobs");
-    const data = await res.json();
-    setJobs(data.jobs ?? []);
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    try {
+      const res = await fetch("/api/jobs", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setJobs(data.jobs ?? []);
+    } catch {
+      // Ignore transient fetch failures during polling.
+    } finally {
+      loadingRef.current = false;
+    }
   }, []);
 
   useEffect(() => {

@@ -1,8 +1,14 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
 import { DB_PATH, ensureDataDirs } from "@/lib/paths";
 import {
   ALL_PLATFORM_IDS,
   type Article,
+  type CorpusItem,
+  type GeoKeyword,
+  type GeoKeywordArticle,
+  type GeoKeywordArticleWithTitle,
+  type GeoKeywordMine,
   type JobStatus,
   type PlatformId,
   type PlatformSession,
@@ -58,7 +64,60 @@ function migrate(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_jobs_article ON publish_jobs(article_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON publish_jobs(status);
+
+    CREATE TABLE IF NOT EXISTS corpus_items (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'other',
+      tags TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_corpus_category ON corpus_items(category);
+    CREATE INDEX IF NOT EXISTS idx_corpus_updated ON corpus_items(updated_at);
+
+    CREATE TABLE IF NOT EXISTS geo_keyword_mines (
+      id TEXT PRIMARY KEY,
+      seed TEXT NOT NULL,
+      context TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS geo_keywords (
+      id TEXT PRIMARY KEY,
+      mine_id TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      title TEXT NOT NULL,
+      intent TEXT NOT NULL DEFAULT 'informational',
+      angle TEXT NOT NULL DEFAULT '',
+      norm_key TEXT NOT NULL,
+      article_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (mine_id) REFERENCES geo_keyword_mines(id) ON DELETE CASCADE,
+      UNIQUE(norm_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_geo_keywords_mine ON geo_keywords(mine_id);
+    CREATE INDEX IF NOT EXISTS idx_geo_keywords_norm ON geo_keywords(norm_key);
+
+    CREATE TABLE IF NOT EXISTS geo_keyword_articles (
+      id TEXT PRIMARY KEY,
+      keyword_id TEXT NOT NULL,
+      article_id TEXT NOT NULL,
+      brief TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (keyword_id) REFERENCES geo_keywords(id) ON DELETE CASCADE,
+      FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+      UNIQUE(keyword_id, article_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_geo_kw_articles_keyword ON geo_keyword_articles(keyword_id);
   `);
+
+  migrateGeoKeywordArticleLinks(database);
 
   for (const platform of ALL_PLATFORM_IDS) {
     database
@@ -230,4 +289,227 @@ export function listPendingJobs(): PublishJob[] {
        ORDER BY created_at ASC`,
     )
     .all() as PublishJob[];
+}
+
+export function listCorpusItems(): CorpusItem[] {
+  return getDb()
+    .prepare("SELECT * FROM corpus_items ORDER BY updated_at DESC")
+    .all() as CorpusItem[];
+}
+
+export function getCorpusItem(id: string): CorpusItem | undefined {
+  return getDb().prepare("SELECT * FROM corpus_items WHERE id = ?").get(id) as
+    | CorpusItem
+    | undefined;
+}
+
+export function createCorpusItem(item: CorpusItem) {
+  getDb()
+    .prepare(
+      `INSERT INTO corpus_items (id, title, category, tags, content, created_at, updated_at)
+       VALUES (@id, @title, @category, @tags, @content, @created_at, @updated_at)`,
+    )
+    .run(item);
+}
+
+export function updateCorpusItem(
+  id: string,
+  patch: Partial<Pick<CorpusItem, "title" | "category" | "tags" | "content">>,
+) {
+  const existing = getCorpusItem(id);
+  if (!existing) return null;
+  const next: CorpusItem = {
+    ...existing,
+    ...patch,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE corpus_items
+       SET title = @title, category = @category, tags = @tags,
+           content = @content, updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run(next);
+  return next;
+}
+
+export function deleteCorpusItem(id: string) {
+  getDb().prepare("DELETE FROM corpus_items WHERE id = ?").run(id);
+}
+
+export function listGeoMines(limit = 50): GeoKeywordMine[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM geo_keyword_mines ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(limit) as GeoKeywordMine[];
+}
+
+export function getGeoMine(id: string): GeoKeywordMine | undefined {
+  return getDb()
+    .prepare("SELECT * FROM geo_keyword_mines WHERE id = ?")
+    .get(id) as GeoKeywordMine | undefined;
+}
+
+export function createGeoMine(mine: GeoKeywordMine) {
+  getDb()
+    .prepare(
+      `INSERT INTO geo_keyword_mines (id, seed, context, created_at, updated_at)
+       VALUES (@id, @seed, @context, @created_at, @updated_at)`,
+    )
+    .run(mine);
+}
+
+export function touchGeoMine(id: string) {
+  getDb()
+    .prepare(
+      `UPDATE geo_keyword_mines SET updated_at = @updated_at WHERE id = @id`,
+    )
+    .run({ id, updated_at: new Date().toISOString() });
+}
+
+export function deleteGeoMine(id: string) {
+  getDb().prepare("DELETE FROM geo_keyword_mines WHERE id = ?").run(id);
+}
+
+export function listGeoKeywordsByMine(mineId: string): GeoKeyword[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM geo_keywords WHERE mine_id = ? ORDER BY created_at ASC`,
+    )
+    .all(mineId) as GeoKeyword[];
+}
+
+export function listAllGeoNormKeys(): string[] {
+  return (
+    getDb()
+      .prepare("SELECT norm_key FROM geo_keywords")
+      .all() as { norm_key: string }[]
+  ).map((row) => row.norm_key);
+}
+
+export function insertGeoKeywords(keywords: GeoKeyword[]) {
+  if (!keywords.length) return 0;
+  const stmt = getDb().prepare(
+    `INSERT OR IGNORE INTO geo_keywords
+     (id, mine_id, keyword, title, intent, angle, norm_key, article_id, created_at)
+     VALUES (@id, @mine_id, @keyword, @title, @intent, @angle, @norm_key, @article_id, @created_at)`,
+  );
+  let inserted = 0;
+  const tx = getDb().transaction((rows: GeoKeyword[]) => {
+    for (const row of rows) {
+      const info = stmt.run(row);
+      if (info.changes > 0) inserted += 1;
+    }
+  });
+  tx(keywords);
+  return inserted;
+}
+
+function migrateGeoKeywordArticleLinks(database: Database.Database) {
+  try {
+    const legacy = database
+      .prepare(
+        `SELECT gk.id, gk.article_id, gk.created_at
+         FROM geo_keywords gk
+         INNER JOIN articles a ON a.id = gk.article_id
+         WHERE gk.article_id IS NOT NULL`,
+      )
+      .all() as { id: string; article_id: string; created_at: string }[];
+
+    if (!legacy.length) return;
+
+    const insert = database.prepare(
+      `INSERT OR IGNORE INTO geo_keyword_articles (id, keyword_id, article_id, brief, created_at)
+       VALUES (@id, @keyword_id, @article_id, '', @created_at)`,
+    );
+    const tx = database.transaction((rows: typeof legacy) => {
+      for (const row of rows) {
+        insert.run({
+          id: randomUUID(),
+          keyword_id: row.id,
+          article_id: row.article_id,
+          created_at: row.created_at,
+        });
+      }
+    });
+    tx(legacy);
+  } catch (err) {
+    console.warn("[db] migrate geo keyword article links:", err);
+  }
+}
+
+export function linkGeoKeywordArticle(
+  keywordId: string,
+  articleId: string,
+  brief = "",
+): GeoKeywordArticle | undefined {
+  const keyword = getGeoKeyword(keywordId);
+  if (!keyword) return undefined;
+
+  const row: GeoKeywordArticle = {
+    id: randomUUID(),
+    keyword_id: keywordId,
+    article_id: articleId,
+    brief: brief.trim(),
+    created_at: new Date().toISOString(),
+  };
+  const info = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO geo_keyword_articles
+       (id, keyword_id, article_id, brief, created_at)
+       VALUES (@id, @keyword_id, @article_id, @brief, @created_at)`,
+    )
+    .run(row);
+  if (info.changes === 0) {
+    return getDb()
+      .prepare(
+        `SELECT * FROM geo_keyword_articles WHERE keyword_id = ? AND article_id = ?`,
+      )
+      .get(keywordId, articleId) as GeoKeywordArticle | undefined;
+  }
+  return row;
+}
+
+export function listGeoKeywordArticlesByKeyword(
+  keywordId: string,
+): GeoKeywordArticleWithTitle[] {
+  return getDb()
+    .prepare(
+      `SELECT gka.*, a.title AS article_title
+       FROM geo_keyword_articles gka
+       JOIN articles a ON a.id = gka.article_id
+       WHERE gka.keyword_id = ?
+       ORDER BY gka.created_at DESC`,
+    )
+    .all(keywordId) as GeoKeywordArticleWithTitle[];
+}
+
+export function listGeoKeywordArticlesByMine(
+  mineId: string,
+): GeoKeywordArticleWithTitle[] {
+  return getDb()
+    .prepare(
+      `SELECT gka.*, a.title AS article_title
+       FROM geo_keyword_articles gka
+       JOIN geo_keywords gk ON gk.id = gka.keyword_id
+       JOIN articles a ON a.id = gka.article_id
+       WHERE gk.mine_id = ?
+       ORDER BY gka.created_at DESC`,
+    )
+    .all(mineId) as GeoKeywordArticleWithTitle[];
+}
+
+export function getGeoKeyword(id: string): GeoKeyword | undefined {
+  return getDb()
+    .prepare("SELECT * FROM geo_keywords WHERE id = ?")
+    .get(id) as GeoKeyword | undefined;
+}
+
+export function countGeoKeywordsByMine(mineId: string): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) as c FROM geo_keywords WHERE mine_id = ?")
+    .get(mineId) as { c: number };
+  return row.c;
 }

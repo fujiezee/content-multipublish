@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { PlatformId, PlatformSession } from "@/lib/types";
 import { PLATFORMS } from "@/lib/types";
 import { SessionBadge } from "@/components/StatusBadge";
+import { PlatformIcon } from "@/components/PlatformIcon";
 
 export function AccountsPanel() {
   const [sessions, setSessions] = useState<PlatformSession[]>([]);
@@ -57,59 +58,64 @@ export function AccountsPanel() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">账号</h1>
-        <p className="mt-1 text-[var(--muted)]">
+        <h1 className="text-2xl font-semibold tracking-tight">账号</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">
           首次连接会打开有头浏览器，扫码或账密登录后自动保存 Cookie（不存密码）。
           简书请登录成功并看到「写文章 / 新建文章」后再稍等，系统确认后会自动关闭窗口。
         </p>
       </div>
 
       {message && (
-        <div className="card border-[var(--accent)]/30 bg-[var(--accent-soft)]/40 px-4 py-3 text-sm">
+        <div className="card border-[var(--accent)]/30 bg-[var(--accent-soft)]/40 px-3 py-2 text-sm">
           {message}
         </div>
       )}
 
-      <ul className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {PLATFORMS.map((platform) => {
           const session = sessions.find((s) => s.platform === platform.id);
           const status = session?.status ?? "disconnected";
           const isBusy = busy === platform.id;
           return (
-            <li key={platform.id} className="card flex flex-col p-5">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-xl font-medium">{platform.name}</h2>
-                  <p className="mt-1 text-sm text-[var(--muted)]">{platform.description}</p>
+            <li key={platform.id} className="card flex flex-col gap-2 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <PlatformIcon platform={platform.id} size={28} />
+                  <h2 className="truncate text-sm font-medium">{platform.name}</h2>
                 </div>
                 <SessionBadge status={status} />
               </div>
-              <div className="mt-4 text-xs text-[var(--muted)]">
-                {session?.display_name ? `显示名：${session.display_name}` : "尚未绑定显示名"}
-                <br />
+              <p className="line-clamp-1 text-xs text-[var(--muted)]" title={platform.description}>
+                {platform.description}
+              </p>
+              <p className="text-xs text-[var(--muted)]">
+                {session?.display_name || "未绑定显示名"}
                 {session?.connected_at
-                  ? `连接于 ${new Date(session.connected_at).toLocaleString("zh-CN")}`
-                  : "未连接"}
-              </div>
-              <div className="mt-auto flex flex-wrap gap-2 pt-5">
+                  ? ` · ${new Date(session.connected_at).toLocaleDateString("zh-CN")}`
+                  : " · 未连接"}
+              </p>
+              <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
                 <button
-                  className="btn btn-primary"
+                  type="button"
+                  className="btn btn-primary px-2.5 py-1 text-xs"
                   disabled={!!busy}
                   onClick={() => void act(platform.id, "connect")}
                 >
-                  {isBusy && busy === platform.id ? "进行中…" : "连接 / 重新登录"}
+                  {isBusy ? "进行中…" : "连接"}
                 </button>
                 <button
-                  className="btn btn-ghost"
+                  type="button"
+                  className="btn btn-ghost px-2.5 py-1 text-xs"
                   disabled={!!busy}
                   onClick={() => void act(platform.id, "check")}
                 >
                   检测
                 </button>
                 <button
-                  className="btn btn-danger"
+                  type="button"
+                  className="btn btn-danger px-2.5 py-1 text-xs"
                   disabled={!!busy}
                   onClick={() => void act(platform.id, "disconnect")}
                 >

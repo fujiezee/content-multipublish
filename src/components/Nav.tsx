@@ -5,6 +5,9 @@ import { usePathname } from "next/navigation";
 
 const links = [
   { href: "/", label: "文章" },
+  { href: "/keywords", label: "GEO 挖词" },
+  { href: "/corpus", label: "语料库" },
+  { href: "/writing", label: "AI 写文案" },
   { href: "/accounts", label: "账号" },
   { href: "/jobs", label: "发布记录" },
 ];
@@ -33,11 +36,7 @@ export function Nav() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`rounded-full px-3.5 py-1.5 text-sm transition-colors ${
-                  active
-                    ? "bg-[var(--accent)] text-[#f5faf8]"
-                    : "text-[var(--muted)] hover:bg-[var(--bg-deep)] hover:text-[var(--ink)]"
-                }`}
+                className={active ? "nav-link nav-link--active" : "nav-link text-[var(--muted)]"}
               >
                 {link.label}
               </Link>

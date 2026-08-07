@@ -1,1 +1,5 @@
-import './assets/index.ts-ZvOctxVj.js';
+// Core handlers (CHECK_ALL_AUTH, SYNC_ARTICLE, …) must load synchronously.
+import "./assets/index.ts-ZvOctxVj.js";
+import "./popup-bridge.js";
+import "./register-extra-adapters.js";
+import "./on-install.js";
