@@ -15,6 +15,7 @@ import {
   type PublishEngine,
   type PublishJob,
   type SessionStatus,
+  normalizePublishEngine,
 } from "@/lib/types";
 
 let db: Database.Database | null = null;
@@ -237,7 +238,7 @@ export function createJobs(jobs: PublishJob[]) {
     for (const row of rows) {
       stmt.run({
         ...row,
-        engine: row.engine === "extension" ? "extension" : "playwright",
+        engine: normalizePublishEngine(row.engine),
       });
     }
   });
@@ -289,7 +290,7 @@ export function updateJob(
     ...existing,
     ...patch,
     status: (patch.status ?? existing.status) as JobStatus,
-    engine: (patch.engine ?? existing.engine ?? "playwright") as PublishEngine,
+    engine: normalizePublishEngine(patch.engine ?? existing.engine),
     updated_at: new Date().toISOString(),
   };
   getDb()
@@ -304,13 +305,13 @@ export function updateJob(
   return next;
 }
 
-/** Only Playwright jobs — extension jobs are driven by the browser bridge. */
+/** Playwright + Node API jobs — extension jobs are driven by the browser bridge. */
 export function listPendingJobs(): PublishJob[] {
   const rows = getDb()
     .prepare(
       `SELECT * FROM publish_jobs
        WHERE status = 'pending'
-         AND (engine IS NULL OR engine = '' OR engine = 'playwright')
+         AND (engine IS NULL OR engine = '' OR engine = 'playwright' OR engine = 'api')
        ORDER BY created_at ASC`,
     )
     .all() as PublishJob[];
@@ -488,7 +489,7 @@ function normalizeJob(row: PublishJob | undefined): PublishJob | undefined {
   if (!row) return undefined;
   return {
     ...row,
-    engine: (row.engine === "extension" ? "extension" : "playwright") as PublishEngine,
+    engine: normalizePublishEngine(row.engine),
   };
 }
 

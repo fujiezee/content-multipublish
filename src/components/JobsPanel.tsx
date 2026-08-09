@@ -84,7 +84,11 @@ export function JobsPanel() {
                         {job.article_id.slice(0, 8)}…
                       </Link>
                       {" · "}
-                      {job.engine === "extension" ? "扩展" : "本机自动"}
+                      {job.engine === "extension"
+                        ? "扩展"
+                        : job.engine === "api"
+                          ? "API"
+                          : "本机自动"}
                       {" · "}
                       {new Date(job.updated_at).toLocaleString("zh-CN")}
                     </div>

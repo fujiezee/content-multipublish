@@ -56,27 +56,29 @@ npm run browsers
 1. **扩展**：按上文加载 `tools/dianwu-geo`，并在 Chrome 登录目标平台
 2. **文章**：新建文章，填写标题、摘要、封面与正文
 3. **同步**：编辑器点「多平台同步」，勾选平台后开始；扩展覆盖的平台同步到**草稿**，完成后可打开草稿链接确认发布
-4. **本机自动（实验）**：扩展未覆盖或未安装时，可用 Playwright 串行打开编辑页；失败截图在 `data/debug/`。补封面/标签后请关闭窗口，队列才会继续
+4. **API 草稿（实验）**：思否等在「账号」页已连接本机会话时，可走 Node 草稿 API（无需开浏览器窗口）
+5. **本机自动（实验）**：扩展未覆盖或未安装时，可用 Playwright 串行打开编辑页；失败截图在 `data/debug/`。补封面/标签后请关闭窗口，队列才会继续
 
-默认不会一次勾选全部平台。扩展平台与本机自动可混选：前者走扩展，后者走本机队列。
+默认不会一次勾选全部平台。API / 扩展 / 本机自动可混选，按平台能力分流。
 
 ## 支持的平台（28）
 
 知乎、微博、百家号、简书、CSDN、头条号、掘金、微信公众号、B站专栏、豆瓣、搜狐号、大鱼号、一点号、博客园、51CTO、思否、慕课手记、开源中国、语雀、人人都是产品经理、雪球、搜狐焦点、小红书、抖音图文、网易号、什么值得买、东方财富、X。
 
-其中扩展草稿同步覆盖约 14 个（知乎、掘金、头条、微博、B站、百家号、CSDN、语雀、豆瓣、搜狐、雪球、微信、人人都是产品经理、思否等）；其余走本机自动。
+其中扩展草稿同步覆盖约 14 个（知乎、掘金、头条、微博、B站、百家号、CSDN、语雀、豆瓣、搜狐、雪球、微信、人人都是产品经理、思否等）；思否在本机会话已连接时可优先走 Node API 草稿；其余走本机自动。
 
 未包含：WordPress / Typecho（需站点 URL 与 XML-RPC 等单独配置）、Hexo/Hugo（导出类）。
 
 ## 项目结构（简）
 
 ```
-tools/dianwu-geo/     # Chrome 扩展（主同步路径）
-src/lib/dianwu-geo.ts # 编辑器 ↔ 扩展桥接
-src/lib/publishers/   # 各平台 Playwright 适配器（兜底）
-src/lib/queue/        # 本机串行发布队列与会话连接
-src/app/              # Next.js UI + API
-data/                 # 本地运行时数据（gitignore，勿提交）
+tools/dianwu-geo/       # Chrome 扩展（主同步路径）
+src/lib/dianwu-geo.ts   # 编辑器 ↔ 扩展桥接
+src/lib/draft-adapters/ # Node 草稿 API（Cookie + HTTP，实验）
+src/lib/publishers/     # 各平台 Playwright 适配器（兜底）
+src/lib/queue/          # 本机串行发布队列与会话连接
+src/app/                # Next.js UI + API
+data/                   # 本地运行时数据（gitignore，勿提交）
 ```
 
 ## 常见问题

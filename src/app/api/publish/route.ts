@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { enqueuePublish } from "@/lib/queue/publisher";
-import type { PlatformId, PublishEngine } from "@/lib/types";
+import type { PlatformId } from "@/lib/types";
+import { normalizePublishEngine } from "@/lib/types";
 import { articleToPublishContent, validateForPlatform } from "@/lib/content/adapt";
 import { getArticle } from "@/lib/db";
 
@@ -11,9 +12,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const articleId = body.articleId as string;
   const platforms = (body.platforms ?? []) as PlatformId[];
-  const engine = (
-    body.engine === "extension" ? "extension" : "playwright"
-  ) as PublishEngine;
+  const engine = normalizePublishEngine(body.engine);
 
   if (!articleId) {
     return NextResponse.json({ error: "缺少 articleId" }, { status: 400 });

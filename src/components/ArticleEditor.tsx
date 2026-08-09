@@ -29,8 +29,16 @@ import {
   type DianwuGeoOpenResult,
   type DianwuGeoSyncState,
 } from "@/lib/dianwu-geo";
+import { isApiDraftPlatform } from "@/lib/draft-adapters/platforms";
+import type { PublishEngine } from "@/lib/types";
 
 const JOB_MAP_KEY = (articleId: string) => `dwgeo-ext-job-map:${articleId}`;
+
+function engineLabel(engine: PublishEngine | undefined): string {
+  if (engine === "extension") return "扩展";
+  if (engine === "api") return "API";
+  return "本机自动";
+}
 type SyncResultLike = {
   platform?: string;
   success?: boolean;
@@ -569,14 +577,42 @@ export function ArticleEditor({ id }: { id: string }) {
     }
   }
 
+  async function runApiSync(platforms: PlatformId[]) {
+    const res = await fetch("/api/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        articleId: id,
+        platforms,
+        engine: "api",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "加入 API 草稿队列失败");
+    }
+  }
+
+  function sessionConnected(platform: PlatformId): boolean {
+    return sessions.some(
+      (s) => s.platform === platform && s.status === "connected",
+    );
+  }
+
+  function canUseApiDraft(platform: PlatformId): boolean {
+    return isApiDraftPlatform(platform) && sessionConnected(platform);
+  }
+
   async function startSync() {
     setPublishing(true);
     setMessage(null);
     try {
       if (dirty) await save();
 
-      const extPlatforms = selected.filter((p) => isExtensionPlatform(p));
-      const pwPlatforms = selected.filter((p) => !isExtensionPlatform(p));
+      const apiPlatforms = selected.filter((p) => canUseApiDraft(p));
+      const remainder = selected.filter((p) => !canUseApiDraft(p));
+      const extPlatforms = remainder.filter((p) => isExtensionPlatform(p));
+      const pwPlatforms = remainder.filter((p) => !isExtensionPlatform(p));
 
       const extOk =
         extensionReady === true ||
@@ -584,6 +620,13 @@ export function ArticleEditor({ id }: { id: string }) {
         (await waitForDianwuGeoExtension(2_000));
 
       const parts: string[] = [];
+
+      if (apiPlatforms.length) {
+        await runApiSync(apiPlatforms);
+        parts.push(
+          `已加入 API 草稿队列 ${apiPlatforms.length} 个平台（无需开窗）`,
+        );
+      }
 
       if (extPlatforms.length && extOk) {
         setExtensionReady(true);
@@ -864,7 +907,7 @@ export function ArticleEditor({ id }: { id: string }) {
                     {PLATFORMS.find((p) => p.id === job.platform)?.name}
                   </span>
                   <span className="text-xs text-[var(--muted)]">
-                    {job.engine === "extension" ? "扩展" : "本机自动"}
+                    {engineLabel(job.engine)}
                   </span>
                 </div>
                 <div className="text-sm text-[var(--muted)]">
@@ -875,7 +918,7 @@ export function ArticleEditor({ id }: { id: string }) {
                       rel="noreferrer"
                       className="underline"
                     >
-                      {job.engine === "extension" ? "打开草稿" : "查看链接"}
+                      {job.engine === "playwright" ? "查看链接" : "打开草稿"}
                     </a>
                   ) : (
                     job.error || new Date(job.updated_at).toLocaleString("zh-CN")
@@ -893,7 +936,7 @@ export function ArticleEditor({ id }: { id: string }) {
             <div className="shrink-0 border-b border-[var(--line)] px-6 py-5">
               <h2 className="text-xl font-semibold">多平台同步</h2>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                扩展覆盖的平台走草稿 API；其余走本机自动（实验）。已选扩展{" "}
+                已连本机会话的 API 平台免开窗；扩展平台走 Chrome 草稿；其余本机自动。已选扩展{" "}
                 {extSelected} / 本机 {pwSelected}
                 {extensionReady === false
                   ? " · 当前未检测到扩展，扩展平台将回落本机自动"
@@ -904,7 +947,13 @@ export function ArticleEditor({ id }: { id: string }) {
               {PLATFORMS.map((p) => {
                 const session = sessions.find((s) => s.platform === p.id);
                 const connected = session?.status === "connected";
-                const viaExt = isExtensionPlatform(p.id);
+                const viaApi = isApiDraftPlatform(p.id) && connected;
+                const viaExt = !viaApi && isExtensionPlatform(p.id);
+                const routeLabel = viaApi
+                  ? "API·草稿"
+                  : viaExt
+                    ? "扩展·草稿"
+                    : "本机自动";
                 return (
                   <li
                     key={p.id}
@@ -927,18 +976,22 @@ export function ArticleEditor({ id }: { id: string }) {
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium">{p.name}</span>
                           <span
-                            className={`badge ${viaExt ? "badge-ok" : "badge-warn"}`}
+                            className={`badge ${viaApi || viaExt ? "badge-ok" : "badge-warn"}`}
                           >
-                            {viaExt ? "扩展·草稿" : "本机自动"}
+                            {routeLabel}
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-[var(--muted)]">
                           {p.limits}
-                          {!viaExt && (
+                          {(viaApi || !viaExt) && (
                             <span>
                               {" "}
                               · 本机会话
-                              {connected ? "已连接" : "未连接（将弹窗登录）"}
+                              {connected
+                                ? "已连接"
+                                : viaApi
+                                  ? "未连接"
+                                  : "未连接（将弹窗登录）"}
                             </span>
                           )}
                         </p>

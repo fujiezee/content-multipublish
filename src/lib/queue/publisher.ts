@@ -6,9 +6,14 @@ import {
   updateJob,
 } from "@/lib/db";
 import { articleToPublishContent } from "@/lib/content/adapt";
+import {
+  contentToDraftArticle,
+  getDraftAdapter,
+} from "@/lib/draft-adapters";
 import { closeBrowser, openContext, saveSession } from "@/lib/publishers/browser";
 import { getPublisher } from "@/lib/publishers";
 import type { PlatformId, PublishEngine, PublishJob } from "@/lib/types";
+import { normalizePublishEngine } from "@/lib/types";
 import type { BrowserContext, Page } from "playwright";
 import { randomUUID } from "crypto";
 
@@ -23,13 +28,13 @@ export function enqueuePublish(
   if (!article) throw new Error("文章不存在");
   if (!platforms.length) throw new Error("请至少选择一个平台");
 
-  const engine: PublishEngine = options.engine ?? "playwright";
+  const engine = normalizePublishEngine(options.engine);
   const now = new Date().toISOString();
   const jobs: PublishJob[] = platforms.map((platform) => ({
     id: randomUUID(),
     article_id: articleId,
     platform,
-    // Extension jobs start running — browser bridge updates them; never enter Playwright queue
+    // Extension jobs start running — browser bridge updates them; never enter the Node queue
     status: engine === "extension" ? "running" : "pending",
     result_url: null,
     error: null,
@@ -39,7 +44,7 @@ export function enqueuePublish(
     updated_at: now,
   }));
   createJobs(jobs);
-  if (engine === "playwright") {
+  if (engine === "playwright" || engine === "api") {
     void processQueue();
   }
   return jobs;
@@ -48,13 +53,15 @@ export function enqueuePublish(
 export async function retryJob(jobId: string) {
   const job = getJob(jobId);
   if (!job) throw new Error("任务不存在");
-  // Retries always use Playwright queue (extension sync is initiated from the editor)
+  // Keep api retries on the API path; extension failures fall back to Playwright
+  const engine: PublishEngine =
+    job.engine === "api" ? "api" : "playwright";
   updateJob(jobId, {
     status: "pending",
     error: null,
     result_url: null,
     screenshot_path: null,
-    engine: "playwright",
+    engine,
   });
   void processQueue();
   return getJob(jobId);
@@ -99,7 +106,56 @@ async function waitForManualFinish(
   }
 }
 
+async function runApiJob(job: PublishJob): Promise<void> {
+  updateJob(job.id, { status: "running", error: null });
+  const article = getArticle(job.article_id);
+  if (!article) {
+    updateJob(job.id, { status: "failed", error: "文章不存在" });
+    return;
+  }
+
+  const adapter = getDraftAdapter(job.platform);
+  if (!adapter) {
+    updateJob(job.id, {
+      status: "failed",
+      error: `平台 ${job.platform} 暂无 Node 草稿 API`,
+    });
+    return;
+  }
+
+  const content = articleToPublishContent(article);
+  const auth = await adapter.checkAuth();
+  if (!auth.isAuthenticated) {
+    updateJob(job.id, {
+      status: "failed",
+      error:
+        auth.error ||
+        "本机会话未登录或已过期，请在「账号」页重新连接后再试",
+    });
+    return;
+  }
+
+  const result = await adapter.publishDraft(contentToDraftArticle(content));
+  if (result.success) {
+    updateJob(job.id, {
+      status: "success",
+      result_url: result.postUrl ?? null,
+      error: null,
+    });
+  } else {
+    updateJob(job.id, {
+      status: "failed",
+      error: result.error ?? "草稿同步失败",
+    });
+  }
+}
+
 async function runJob(job: PublishJob): Promise<void> {
+  if (normalizePublishEngine(job.engine) === "api") {
+    await runApiJob(job);
+    return;
+  }
+
   updateJob(job.id, { status: "running", error: null });
   const article = getArticle(job.article_id);
   if (!article) {
