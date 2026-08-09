@@ -233,7 +233,7 @@ export const PLATFORMS: {
     id: "weixin",
     name: "微信公众号",
     description: "公众号图文（优先存草稿）",
-    limits: "标题建议 ≤ 64 字；常需补封面/作者后人工发表",
+    limits: "标题建议 ≤ 64 字；自动写入正文并用后台 AI配图设封面后存草稿",
   },
   {
     id: "bilibili",

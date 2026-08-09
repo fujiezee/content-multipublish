@@ -5,7 +5,10 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { DEBUG_DIR, ensureDataDirs, sessionPath } from "@/lib/paths";
 import type { PlatformId } from "@/lib/types";
 
-let sharedBrowser: Browser | null = null;
+// Keep headed / headless browsers separate — never close one to launch the other.
+// Otherwise a background session check (headless) kills an in-flight publish window.
+let headedBrowser: Browser | null = null;
+let headlessBrowser: Browser | null = null;
 
 function ensureBrowsersPath() {
   // Cursor / some sandboxes point PLAYWRIGHT_BROWSERS_PATH at an empty cache.
@@ -61,36 +64,45 @@ function systemChromePath(): string | null {
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 
-export async function getBrowser(headless = false): Promise<Browser> {
-  if (sharedBrowser?.isConnected()) return sharedBrowser;
+async function launchBrowser(headless: boolean): Promise<Browser> {
   ensureBrowsersPath();
-
   const common = {
     headless,
     slowMo: headless ? 0 : 80,
     args: ["--disable-blink-features=AutomationControlled"],
   };
-
   try {
     const chrome = systemChromePath();
     if (chrome) {
-      sharedBrowser = await chromium.launch({ ...common, executablePath: chrome });
-    } else {
-      sharedBrowser = await chromium.launch(common);
+      return await chromium.launch({ ...common, executablePath: chrome });
     }
+    return await chromium.launch(common);
   } catch (err) {
-    // Last resort: bundled Chromium after ensuring browsers path
-    sharedBrowser = await chromium.launch(common).catch(() => {
+    return chromium.launch(common).catch(() => {
       throw err;
     });
   }
-  return sharedBrowser;
+}
+
+export async function getBrowser(headless = false): Promise<Browser> {
+  if (headless) {
+    if (headlessBrowser?.isConnected()) return headlessBrowser;
+    headlessBrowser = await launchBrowser(true);
+    return headlessBrowser;
+  }
+  if (headedBrowser?.isConnected()) return headedBrowser;
+  headedBrowser = await launchBrowser(false);
+  return headedBrowser;
 }
 
 export async function closeBrowser() {
-  if (sharedBrowser) {
-    await sharedBrowser.close().catch(() => undefined);
-    sharedBrowser = null;
+  if (headedBrowser) {
+    await headedBrowser.close().catch(() => undefined);
+    headedBrowser = null;
+  }
+  if (headlessBrowser) {
+    await headlessBrowser.close().catch(() => undefined);
+    headlessBrowser = null;
   }
 }
 
@@ -145,8 +157,17 @@ export async function waitForManualLogin(
 ) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await isLoggedIn(page)) return true;
-    await page.waitForTimeout(1500);
+    try {
+      if (page.isClosed()) return false;
+      if (await isLoggedIn(page)) return true;
+    } catch (err) {
+      // Navigations during QR login often destroy the execution context
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/Execution context was destroyed|Target closed|has been closed/i.test(msg)) {
+        throw err;
+      }
+    }
+    await page.waitForTimeout(1500).catch(() => undefined);
   }
   return false;
 }

@@ -107,6 +107,28 @@ export async function connectPlatform(platform: PlatformId) {
         if (!hasUi) return false;
       }
 
+      // 抖音创作者：未登录也会有 passport_csrf_token / odin_tt，且首页 URL 含 creator
+      // 必须等到真正的 sessionid，且登录二维码消失，再进图文发布页确认
+      if (platform === "douyin") {
+        if (!(await publisher.isLoggedIn(p))) return false;
+        if (
+          !/creator-micro\/content\/post\/image|content\/post\/image/i.test(
+            p.url(),
+          )
+        ) {
+          await p
+            .goto(publisher.editorUrl, {
+              waitUntil: "domcontentloaded",
+              timeout: 45_000,
+            })
+            .catch(() => undefined);
+          await p.waitForTimeout(2500);
+        }
+        if (!(await publisher.isLoggedIn(p))) return false;
+        if (/passport|sso\.|\/login\b/i.test(p.url())) return false;
+        return true;
+      }
+
       // 掘金 / 微信等：连接后打开编辑页确认未掉登录
       if (
         platform === "juejin" ||
@@ -115,7 +137,6 @@ export async function connectPlatform(platform: PlatformId) {
         platform === "segmentfault" ||
         platform === "bilibili" ||
         platform === "xiaohongshu" ||
-        platform === "douyin" ||
         platform === "x"
       ) {
         const url = p.url();
@@ -132,7 +153,7 @@ export async function connectPlatform(platform: PlatformId) {
           await p.waitForTimeout(2000);
         }
         if (
-          (platform === "xiaohongshu" || platform === "douyin") &&
+          platform === "xiaohongshu" &&
           !/publish|post\/image|creator/i.test(url)
         ) {
           await p
@@ -143,8 +164,63 @@ export async function connectPlatform(platform: PlatformId) {
             .catch(() => undefined);
           await p.waitForTimeout(2000);
         }
-        if (platform === "weixin" && /loginpage|login\?/i.test(p.url())) {
-          return false;
+        if (platform === "weixin") {
+          if (/loginpage|login\?/i.test(p.url())) return false;
+          if (
+            (await p.getByText("微信扫一扫").count()) > 0 &&
+            !/[?&]token=\d+/i.test(p.url())
+          ) {
+            return false;
+          }
+          // Require tokenized home/editor URL — cookies alone are not enough
+          if (!/[?&]token=\d+/i.test(p.url())) {
+            await p
+              .goto("https://mp.weixin.qq.com/", {
+                waitUntil: "domcontentloaded",
+                timeout: 45_000,
+              })
+              .catch(() => undefined);
+            await p.waitForTimeout(2500);
+          }
+          if (!/[?&]token=\d+/i.test(p.url())) return false;
+          if (!(await publisher.isLoggedIn(p))) return false;
+          return true;
+        }
+
+        // 大鱼号：首页/游客也有 cna 等 cookie，必须进写稿页且无扫码门
+        if (platform === "dayu") {
+          if (
+            (await p
+              .getByText(/扫码登录|请使用UC浏览器扫码|正在生成二维码/)
+              .count()) > 0
+          ) {
+            return false;
+          }
+          if (!/#\/article\/write|article\/write/i.test(p.url())) {
+            await p
+              .goto(publisher.editorUrl, {
+                waitUntil: "domcontentloaded",
+                timeout: 45_000,
+              })
+              .catch(() => undefined);
+            await p.waitForTimeout(2500);
+          }
+          if (
+            (await p
+              .getByText(/扫码登录|请使用UC浏览器扫码|正在生成二维码/)
+              .count()) > 0
+          ) {
+            return false;
+          }
+          const title = p.locator(
+            'textarea[placeholder*="标题"], input[placeholder*="标题"], input[placeholder*="请输入标题"]',
+          );
+          const hasEditor =
+            (await title.count()) > 0 &&
+            (await title.first().isVisible().catch(() => false));
+          if (!hasEditor) return false;
+          if (!(await publisher.isLoggedIn(p))) return false;
+          return true;
         }
         if (
           /\/login|signin|passport|loginpage|i\/flow\/login/i.test(p.url()) &&
@@ -176,7 +252,8 @@ export async function connectPlatform(platform: PlatformId) {
       !(await publisher.isLoggedIn(page)) ||
       /sign_in|sign_up|passport\.csdn\.net\/login|auth\/page\/login/i.test(
         page.url(),
-      )
+      ) ||
+      (platform === "douyin" && /passport|sso\./i.test(page.url()))
     ) {
       await context.close();
       upsertSession(platform, { status: "disconnected" });
@@ -228,10 +305,24 @@ export async function connectPlatform(platform: PlatformId) {
           );
         }
       }
+      if (platform === "douyin") {
+        const names = new Set(raw.cookies.map((c) => c.name));
+        if (
+          !names.has("sessionid") &&
+          !names.has("sessionid_ss") &&
+          !names.has("sid_guard") &&
+          !names.has("sid_tt")
+        ) {
+          throw new Error(
+            "未拿到抖音登录 Cookie（sessionid）。请扫码完成登录后再等几秒，不要只停留在登录二维码页",
+          );
+        }
+      }
     } catch (e) {
       if (e instanceof Error && e.message.includes("简书")) throw e;
       if (e instanceof Error && e.message.includes("Cookie")) throw e;
       if (e instanceof Error && e.message.includes("头条")) throw e;
+      if (e instanceof Error && e.message.includes("抖音")) throw e;
       // parse errors — still keep file if present
     }
 
@@ -325,11 +416,18 @@ export async function checkPlatformSession(platform: PlatformId) {
       timeout: 45_000,
     });
     await page.waitForTimeout(2000);
-    const loggedIn =
+    let loggedIn =
       (await publisher.isLoggedIn(page)) &&
       !/sign_in|sign_up|passport\.csdn\.net\/login|auth\/page\/login/i.test(
         page.url(),
       );
+    // WeChat: require tokenized URL — stale cookies look "logged in" otherwise
+    if (platform === "weixin") {
+      loggedIn =
+        loggedIn &&
+        /[?&]token=\d+/i.test(page.url()) &&
+        (await page.getByText("微信扫一扫").count()) === 0;
+    }
     const status = loggedIn ? ("connected" as const) : ("expired" as const);
     upsertSession(platform, {
       status,

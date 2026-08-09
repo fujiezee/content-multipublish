@@ -43,7 +43,44 @@ async function isLoggedIn(page: Page): Promise<boolean> {
   );
 }
 
+async function hasSecurityCaptcha(page: Page) {
+  if (
+    (await page.getByText("百度安全验证").count()) > 0 ||
+    (await page.getByText("拖动左侧滑块使图片为正").count()) > 0 ||
+    (await page.getByText("请完成下方验证后继续操作").count()) > 0
+  ) {
+    return true;
+  }
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    const url = frame.url();
+    if (/captcha|pass\.baidu|security/i.test(url)) return true;
+    const t = await frame
+      .locator("body")
+      .innerText()
+      .catch(() => "");
+    if (/百度安全验证|拖动左侧滑块|请完成下方验证/.test(t)) return true;
+  }
+  const text = await page
+    .locator("body")
+    .innerText()
+    .catch(() => "");
+  return /百度安全验证|拖动左侧滑块使图片为正|请完成下方验证后继续操作/.test(
+    text,
+  );
+}
+
 async function dismissOverlays(page: Page) {
+  // Short-article tip: keep 图文 publish (not convert to 动态)
+  const keepNews = page.getByRole("button", { name: "保持图文发布" });
+  if (
+    (await keepNews.count()) > 0 &&
+    (await keepNews.first().isVisible().catch(() => false))
+  ) {
+    await keepNews.first().click({ force: true }).catch(() => undefined);
+    await page.waitForTimeout(500);
+  }
+
   const closes = page.locator(
     'button:has-text("我知道了"), button:has-text("关闭"), button:has-text("跳过"), [aria-label="关闭"]',
   );
@@ -54,6 +91,52 @@ async function dismissOverlays(page: Page) {
       .click({ timeout: 1500 })
       .catch(() => undefined);
   }
+}
+
+async function dismissShortArticleTip(page: Page) {
+  // A) Convert-to-动态 tip
+  const tip = page.locator(
+    '.cheetah-modal:has-text("温馨提示"), [role="dialog"]:has-text("温馨提示"), .cheetah-modal:has-text("保持图文发布")',
+  );
+  if (
+    (await tip.count()) > 0 &&
+    (await tip.first().isVisible().catch(() => false))
+  ) {
+    const keep = tip
+      .getByRole("button", { name: "保持图文发布" })
+      .or(tip.locator('button:has-text("保持图文发布")'));
+    if ((await keep.count()) > 0) {
+      await keep.first().click({ force: true });
+      await page.waitForTimeout(600);
+      return true;
+    }
+  }
+
+  // B) Word-count tip: 正文少于200字 → 确定继续发布
+  const shortTip = page.locator(
+    [
+      '.cheetah-modal:has-text("少于200字")',
+      '.cheetah-modal:has-text("少于 200 字")',
+      '[role="dialog"]:has-text("少于200字")',
+      '.cheetah-modal:has-text("是否确认发布")',
+      '[role="dialog"]:has-text("是否确认发布")',
+    ].join(", "),
+  );
+  if (
+    (await shortTip.count()) > 0 &&
+    (await shortTip.first().isVisible().catch(() => false))
+  ) {
+    const ok = shortTip
+      .getByRole("button", { name: "确定", exact: true })
+      .or(shortTip.locator('button:has-text("确定")'))
+      .last();
+    if ((await ok.count()) > 0) {
+      await ok.click({ force: true });
+      await page.waitForTimeout(800);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** New BJH editor: title is contenteditable inside titleInput; body is UEditor iframe. */
@@ -69,16 +152,23 @@ async function waitForEditorReady(page: Page) {
     )
     .catch(() => undefined);
 
-  // Wait until title contenteditable is visible (spinner gone)
+  // Title contenteditable may be "hidden" to Playwright while still usable
   const titleEd = page
     .locator(
       [
         '.client_components_titleInput [contenteditable="true"]',
         '.client_pages_edit_components_titleInput [contenteditable="true"]',
+        '[class*="titleInput"] [contenteditable="true"]',
+        '[class*="FeEditorApp"][class*="placeholder"]',
       ].join(", "),
     )
     .first();
-  await titleEd.waitFor({ state: "visible", timeout: 45_000 });
+  await titleEd.waitFor({ state: "attached", timeout: 45_000 });
+  await page
+    .getByText("选择封面", { exact: true })
+    .first()
+    .waitFor({ state: "attached", timeout: 30_000 })
+    .catch(() => undefined);
 
   // Body iframe (UEditor) — may take a bit longer
   const start = Date.now();
@@ -102,8 +192,10 @@ function titleLocator(page: Page) {
 async function fillTitle(page: Page, title: string) {
   const value = title.slice(0, 64);
   const loc = titleLocator(page);
-  await loc.waitFor({ state: "visible", timeout: 20_000 });
-  await loc.click({ timeout: 8000 });
+  // Editor chrome sometimes reports contenteditable as not visible; force-click works
+  await loc.waitFor({ state: "attached", timeout: 20_000 });
+  await loc.scrollIntoViewIfNeeded().catch(() => undefined);
+  await loc.click({ force: true, timeout: 8000 });
   await page.waitForTimeout(200);
 
   const mod = process.platform === "darwin" ? "Meta" : "Control";
@@ -253,25 +345,105 @@ async function fillBody(page: Page, content: PublishContent) {
   }
 }
 
-async function openCoverModal(page: Page) {
-  await page
-    .evaluate(() => {
-      const el = [...document.querySelectorAll("*")].find(
-        (e) => (e.textContent || "").trim() === "选择封面",
-      );
-      el?.scrollIntoView({ block: "center" });
-    })
-    .catch(() => undefined);
-  await page.waitForTimeout(300);
+const AI_COVER_TAB = /AI\s*(封图|制图|封面)/;
 
-  const trigger = page.locator('text=选择封面').first();
-  if ((await trigger.count()) === 0) return false;
-  await trigger.click({ timeout: 5000 });
-  await page.waitForTimeout(1200);
+async function coverModalOpen(page: Page) {
+  // Cover dialog has AI tab; ignore unrelated cheetah-modals (AI 助手等)
+  const modal = page.locator(".cheetah-modal:visible, [role='dialog']:visible");
+  const n = await modal.count();
+  for (let i = 0; i < n; i++) {
+    const t = ((await modal.nth(i).innerText().catch(() => "")) || "").replace(
+      /\s+/g,
+      " ",
+    );
+    if (AI_COVER_TAB.test(t) || /本地上传|免费正版图库|设置封面/.test(t)) {
+      return true;
+    }
+  }
   return (
-    (await page.locator('.cheetah-modal, [role="dialog"]').count()) > 0 ||
-    (await page.locator('[role="tab"]:has-text("AI封图")').count()) > 0
+    (await page
+      .locator(".cheetah-tabs-tab:visible, [role='tab']:visible")
+      .filter({ hasText: AI_COVER_TAB })
+      .count()) > 0
   );
+}
+
+async function assertStillOnEditor(page: Page) {
+  if (await hasSecurityCaptcha(page)) {
+    throw new Error(
+      "百家号弹出百度安全验证，请在打开的窗口完成滑块后关闭窗口，再重新发布",
+    );
+  }
+  const url = page.url();
+  if (!isEditorUrl(url)) {
+    throw new Error(
+      `百家号已离开编辑页（${url.includes("/home") ? "被跳到首页" : url}），请完成安全验证后重新发布`,
+    );
+  }
+}
+
+/**
+ * Open cover picker. Preview <img> often sits on top of 「选择封面」and
+ * intercepts normal clicks — scroll into view then force-click that tile only.
+ */
+async function openCoverModal(page: Page) {
+  if (await coverModalOpen(page)) return true;
+  await assertStillOnEditor(page);
+
+  // Cover slot is often below the fold — scroll the form row into view
+  const scrolled = await page.evaluate(() => {
+    const label = [...document.querySelectorAll("*")].find(
+      (e) => (e.textContent || "").trim() === "选择封面",
+    ) as HTMLElement | undefined;
+    if (!label) return false;
+    const tile =
+      (label.closest(
+        ".cheetah-form-item-row, [class*='content'], [class*='cover']",
+      ) as HTMLElement | null) || label;
+    tile.scrollIntoView({ block: "center", inline: "nearest" });
+    return true;
+  });
+  if (!scrolled) {
+    await assertStillOnEditor(page);
+    return false;
+  }
+  await page.waitForTimeout(400);
+
+  // getByText(exact) hits the leaf label — NOT outer list wrappers
+  // (div.filter(/^选择封面$/) matches 7 ancestors; .first() is the wrong one)
+  const label = page.getByText("选择封面", { exact: true }).first();
+
+  // 1) Force-click label — bypasses preview <img> intercepting pointer events
+  if ((await label.count()) > 0) {
+    await label.click({ force: true, timeout: 8000 });
+    await page.waitForTimeout(1000);
+    if (await coverModalOpen(page)) return true;
+  }
+
+  // 2) Cover slot item (single-image tile), not the whole list
+  const item = page
+    .locator('[class*="FeEditorApp"][class*="item"]')
+    .filter({ hasText: /^选择封面$/ })
+    .first();
+  if ((await item.count()) > 0) {
+    await item.click({ force: true, timeout: 8000 }).catch(() => undefined);
+    await page.waitForTimeout(1000);
+    if (await coverModalOpen(page)) return true;
+  }
+
+  // 3) Preview img only inside that item tile
+  const itemImg = item.locator("img").first();
+  if (
+    (await itemImg.count()) > 0 &&
+    (await itemImg.isVisible().catch(() => false))
+  ) {
+    await itemImg.click({ force: true, timeout: 8000 }).catch(() => undefined);
+    await page.waitForTimeout(1000);
+    if (await coverModalOpen(page)) return true;
+  }
+
+  await assertStillOnEditor(page);
+  return false;
 }
 
 type CoverImg = {
@@ -284,9 +456,15 @@ type CoverImg = {
 
 async function listAiCoverImages(page: Page): Promise<CoverImg[]> {
   return page.evaluate(() => {
+    const modals = [
+      ...document.querySelectorAll(".cheetah-modal"),
+      ...document.querySelectorAll('[role="dialog"]'),
+    ];
     const modal =
-      document.querySelector(".cheetah-modal") ||
-      document.querySelector('[role="dialog"]');
+      modals.find((m) => {
+        const t = m.textContent || "";
+        return /AI\s*(封图|制图|封面)|本地上传/.test(t);
+      }) || modals[0];
     if (!modal) return [];
     return [...modal.querySelectorAll("img")]
       .map((img) => {
@@ -301,118 +479,162 @@ async function listAiCoverImages(page: Page): Promise<CoverImg[]> {
         };
       })
       .filter((x) => {
-        if (!x.src || x.w < 90 || x.h < 60) return false;
-        if (/emptyIcon|d79047f0dbf8ca8d|icon|logo|avatar/i.test(x.src + x.cls)) {
+        if (!x.src || x.w < 70 || x.h < 50) return false;
+        if (/emptyIcon|d79047f0dbf8ca8d|placeholder|default/i.test(x.src + x.cls))
           return false;
-        }
-        // Prefer result grid on the left, skip tiny right-side preview chips
-        return x.left < 980;
+        if (/icon|logo|avatar/i.test(x.cls) && x.w < 120) return false;
+        // Result grid left/center; skip far-right phone preview strip
+        return x.left < 980 && x.w <= 420;
       })
       .map(({ src, w, h, top, left }) => ({ src, w, h, top, left }));
   });
 }
 
+async function clickAiCoverTab(page: Page) {
+  const tab = page
+    .locator(
+      ".cheetah-modal .cheetah-tabs-tab, .cheetah-modal [role='tab'], [role='dialog'] [role='tab']",
+    )
+    .filter({ hasText: AI_COVER_TAB })
+    .first();
+  if ((await tab.count()) === 0) return false;
+  await tab.click({ force: true });
+  await page.waitForTimeout(800);
+  return true;
+}
+
 /**
- * Cover picker: open modal → AI封图（用户说的 AI 修图/生图）→
- * 根据全文智能生成 → wait → randomly pick one → 确定.
+ * Cover: 选择封面 → AI封图 → 根据全文智能生成封面 → 等生成完 → 选一张 → 确定.
  */
 async function selectAiCover(page: Page): Promise<boolean> {
   const opened = await openCoverModal(page);
   if (!opened) return false;
 
-  const aiTab = page.locator('[role="tab"]:has-text("AI封图")').first();
-  if ((await aiTab.count()) === 0) {
-    // Fallback: old modal without AI tab
-    return false;
+  if (!(await clickAiCoverTab(page))) {
+    throw new Error("找不到「AI封图/AI制图」页签");
   }
-  await aiTab.click({ force: true });
-  await page.waitForTimeout(800);
 
-  // Random style among 写实风 / 插画风 / 卡通风
+  // Style (optional — generation may already be running / done)
   const styles = ["写实风", "插画风", "卡通风"];
   const style = styles[Math.floor(Math.random() * styles.length)];
   await page
-    .locator(".cheetah-modal, [role='dialog']")
-    .getByText(style, { exact: true })
+    .locator(".cheetah-modal [class*='option']")
+    .filter({ hasText: new RegExp(`^\\s*${style}\\s*$`) })
     .first()
     .click({ force: true })
-    .catch(() => undefined);
+    .catch(async () => {
+      await page
+        .locator(".cheetah-modal")
+        .getByText(style, { exact: true })
+        .first()
+        .click({ force: true })
+        .catch(() => undefined);
+    });
   await page.waitForTimeout(300);
 
-  // Trigger generation from article
-  const smart = page
-    .locator(".cheetah-modal span, [role='dialog'] span")
-    .filter({ hasText: "根据全文智能生成封面" })
-    .first();
-  if ((await smart.count()) === 0) {
-    throw new Error("找不到「根据全文智能生成封面」");
+  // Trigger: 「根据全文智能生成封面」(hidden after generation starts — don't fail)
+  let images = await listAiCoverImages(page);
+  if (images.length === 0) {
+    const smart = page
+      .locator(".cheetah-modal:visible")
+      .getByText("根据全文智能生成封面", { exact: true })
+      .first();
+    if ((await smart.count()) > 0) {
+      await smart.click({ force: true, timeout: 8000 }).catch(() => undefined);
+    } else {
+      await page
+        .getByText("根据全文智能生成封面", { exact: true })
+        .first()
+        .click({ force: true, timeout: 5000 })
+        .catch(() => undefined);
+    }
+    await page.waitForTimeout(1000);
   }
-  await smart.click({ force: true });
-  await page.waitForTimeout(1500);
 
-  // Wait until generation finishes and images appear (up to ~2 min)
+  // Wait for generating → result images (or already-complete grid)
   const deadline = Date.now() + 120_000;
-  let images: CoverImg[] = [];
+  let sawGenerating = false;
   while (Date.now() < deadline) {
     const modalText = (
-      (await page.locator(".cheetah-modal, [role='dialog']").first().innerText().catch(() => "")) ||
-      ""
+      (await page
+        .locator(".cheetah-modal:visible, [role='dialog']:visible")
+        .first()
+        .innerText()
+        .catch(() => "")) || ""
     ).replace(/\s+/g, " ");
     const generating = /图片生成中|生成中|请稍候|排队/.test(modalText);
+    const done = /生成完成|AI\s*图片生成完成/.test(modalText);
+    if (generating) sawGenerating = true;
     images = await listAiCoverImages(page);
 
-    if (!generating && images.length > 0 && !modalText.includes("一键智能生图")) {
-      break;
-    }
-    // Keep AI tab selected if UI switches away
-    const selected = await aiTab.getAttribute("aria-selected").catch(() => null);
-    if (selected !== "true") {
-      await aiTab.click({ force: true }).catch(() => undefined);
+    if (images.length > 0 && (done || !generating)) break;
+
+    const activeAi = page.locator(
+      ".cheetah-modal .cheetah-tabs-tab-active",
+      { hasText: /AI/ },
+    );
+    if ((await activeAi.count()) === 0) {
+      await clickAiCoverTab(page);
     }
     await page.waitForTimeout(2000);
   }
 
   if (!images.length) {
-    // Close modal so publish can still be attempted manually
     await page
       .locator('.cheetah-modal button:has-text("取消")')
       .first()
       .click({ force: true })
       .catch(() => undefined);
-    return false;
+    throw new Error(
+      sawGenerating
+        ? "AI 封面生成结束但未得到可选图片"
+        : "未能启动 AI 封面生成（根据全文智能生成封面）",
+    );
   }
 
   const choice = images[Math.floor(Math.random() * images.length)];
-  await page.evaluate((target) => {
-    const modal =
-      document.querySelector(".cheetah-modal") ||
-      document.querySelector('[role="dialog"]');
-    if (!modal) return;
-    const imgs = [...modal.querySelectorAll("img")];
-    const img =
-      imgs.find((i) => {
-        const r = i.getBoundingClientRect();
-        return (
-          Math.abs(r.left - target.left) < 8 &&
-          Math.abs(r.top - target.top) < 8
-        );
-      }) ||
-      imgs.find((i) => (i.src || "").includes(target.src.slice(30, 70)));
-    if (!img) return;
-    const card =
-      img.closest(
-        '[class*="item"], [class*="card"], [class*="cover"], [class*="img"], div',
-      ) || img.parentElement;
-    card?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    img.click();
-  }, choice);
-  await page.waitForTimeout(800);
+  const clickX = choice.left + Math.min(40, Math.max(8, choice.w / 2));
+  const clickY = choice.top + Math.min(30, Math.max(8, choice.h / 2));
+  await page.mouse.click(clickX, clickY);
+  await page.waitForTimeout(500);
+  // Retry nearby in case the first hit missed the card chrome
+  await page.mouse.click(choice.left + 8, choice.top + 8).catch(() => undefined);
+  await page.waitForTimeout(600);
 
   const confirm = page
-    .locator('.cheetah-modal button:has-text("确定"), [role="dialog"] button:has-text("确定")')
+    .locator(
+      '.cheetah-modal:visible button:has-text("确定"), [role="dialog"]:visible button:has-text("确定")',
+    )
     .last();
+  // 确定 stays disabled until a cover is selected
+  for (let i = 0; i < 10; i++) {
+    const disabled = await confirm.isDisabled().catch(() => true);
+    if (!disabled) break;
+    const img = images[i % images.length];
+    await page.mouse
+      .click(
+        img.left + Math.min(40, Math.max(8, img.w / 2)),
+        img.top + Math.min(30, Math.max(8, img.h / 2)),
+      )
+      .catch(() => undefined);
+    await page.waitForTimeout(500);
+  }
+  if (await confirm.isDisabled().catch(() => false)) {
+    throw new Error("AI 封面未选中，「确定」不可点");
+  }
   await confirm.click({ force: true });
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(1500);
+
+  // Modal must close — otherwise cover was not applied
+  for (let i = 0; i < 3; i++) {
+    const stillOpen = await coverModalOpen(page);
+    if (!stillOpen) return true;
+    await confirm.click({ force: true }).catch(() => undefined);
+    await page.waitForTimeout(800);
+  }
+  if (await coverModalOpen(page)) {
+    throw new Error("已点确定但封面弹窗未关闭，请手动选一张 AI 封面后确定");
+  }
   return true;
 }
 
@@ -495,7 +717,14 @@ async function clickImmediatePublishButton(page: Page) {
 async function clickConfirmPublish(page: Page) {
   await dismissScheduleModal(page);
 
-  const preferredLabels = ["确认发布", "确定发布", "立即发布", "确认"];
+  const preferredLabels = [
+    "保持图文发布",
+    "确认发布",
+    "确定发布",
+    "立即发布",
+    "确认",
+    "确定",
+  ];
   const candidates = page.locator(
     'button, .cheetah-btn, [role="button"], div.cheetah-btn',
   );
@@ -509,15 +738,18 @@ async function clickConfirmPublish(page: Page) {
         (await btn.innerText().catch(() => "")) || "",
       );
       if (text !== label) continue;
-      // Never confirm inside the schedule dialog
-      const inSchedule = await btn
+      // Never confirm inside schedule / cover-picker dialogs
+      const blocked = await btn
         .evaluate((el) => {
           const modal = el.closest(".cheetah-modal, [role='dialog']");
           const t = modal?.textContent || "";
-          return /定时发文|定时发布/.test(t);
+          if (/定时发文|定时发布/.test(t)) return true;
+          if (/是否确认发布|少于\s*200/.test(t)) return false; // short-body tip OK
+          if (/本地上传|免费正版图库|AI\s*(封图|制图|封面)/.test(t)) return true;
+          return false;
         })
         .catch(() => false);
-      if (inSchedule) continue;
+      if (blocked) continue;
       await btn.click({ timeout: 5000, force: true }).catch(() => undefined);
       await page.waitForTimeout(800);
       return true;
@@ -529,41 +761,60 @@ async function clickConfirmPublish(page: Page) {
 async function clickPublishFlow(page: Page) {
   await dismissOverlays(page);
 
-  // Must set cover before publish — use AI封图 and pick one at random
-  const covered = await selectAiCover(page).catch((err) => {
-    console.warn("[baijiahao] AI cover failed:", err);
-    return false;
-  });
+  // Required: AI 封图生成并选用一张（不能跳过）
+  const covered = await selectAiCover(page);
   if (!covered) {
-    // Soft fail: keep going so user can finish cover manually if needed
-    console.warn("[baijiahao] AI cover not set, continuing to publish click");
+    throw new Error("百家号封面未设置：请完成 AI 封图选择后再发布");
   }
 
-  const clicked = await clickImmediatePublishButton(page);
+  // Exact「发布」— never「定时发布」
+  let clicked = await clickImmediatePublishButton(page);
   if (!clicked) {
-    // Last resort — still exclude 定时 via exact filter helper above failed
-    await clickFirstVisible(page, [
-      'button:has-text("发布"):not(:has-text("定时"))',
-    ]);
+    throw new Error("找不到「发布」按钮（已排除定时发布）");
   }
   await page.waitForTimeout(1500);
   await dismissOverlays(page);
+  await dismissShortArticleTip(page);
 
-  // If we landed on schedule dialog by mistake, close and click 发布 again
+  // Mistaken schedule dialog → close and click 发布 again
+  if (await dismissScheduleModal(page)) {
+    clicked = await clickImmediatePublishButton(page);
+    if (!clicked) {
+      throw new Error("已关闭定时弹窗，但仍找不到「发布」按钮");
+    }
+    await page.waitForTimeout(1000);
+  }
+
+  // Cover required again?
+  if (
+    (await page.locator(".cheetah-modal:has-text('AI封图'), .cheetah-modal:has-text('选择封面')").count()) >
+    0
+  ) {
+    await selectAiCover(page);
+    await clickImmediatePublishButton(page);
+    await page.waitForTimeout(1000);
+    await dismissScheduleModal(page);
+    await dismissShortArticleTip(page);
+  }
+
+  // After tip / cover, may need to click 发布 again
+  if (await dismissShortArticleTip(page)) {
+    await clickImmediatePublishButton(page);
+    await page.waitForTimeout(800);
+  }
+
+  await dismissShortArticleTip(page);
+  await clickConfirmPublish(page);
+  // Never leave schedule modal open
   if (await dismissScheduleModal(page)) {
     await clickImmediatePublishButton(page);
+    await dismissShortArticleTip(page);
+    await clickConfirmPublish(page);
+  }
+  // Short-body tip may appear after 发布; confirm and wait
+  if (await dismissShortArticleTip(page)) {
     await page.waitForTimeout(1000);
   }
-
-  // If publish opens another cover prompt, try AI cover once more
-  if ((await page.locator("text=选择封面").count()) > 0) {
-    await selectAiCover(page).catch(() => undefined);
-    await clickImmediatePublishButton(page);
-    await page.waitForTimeout(1000);
-  }
-
-  await clickConfirmPublish(page);
-  await dismissScheduleModal(page);
 }
 
 async function hasSuccessToast(page: Page) {
@@ -610,6 +861,19 @@ async function publish(
     await page.waitForTimeout(2000);
     await dismissOverlays(page);
 
+    if (await hasSecurityCaptcha(page)) {
+      return {
+        success: false,
+        error:
+          "百家号弹出百度安全验证，请在打开的窗口完成滑块后关闭窗口，再重新发布",
+        screenshotPath: await captureDebugScreenshot(
+          page,
+          "baijiahao-captcha",
+        ),
+        keepOpen: true,
+      };
+    }
+
     if (
       page.url().includes("passport") ||
       page.url().includes("login") ||
@@ -626,11 +890,26 @@ async function publish(
     await waitForEditorReady(page);
     await dismissOverlays(page);
 
+    if (await hasSecurityCaptcha(page)) {
+      return {
+        success: false,
+        error:
+          "百家号弹出百度安全验证，请在打开的窗口完成滑块后关闭窗口，再重新发布",
+        screenshotPath: await captureDebugScreenshot(
+          page,
+          "baijiahao-captcha",
+        ),
+        keepOpen: true,
+      };
+    }
+
     await fillTitle(page, content.title);
     await page.waitForTimeout(400);
+    await assertStillOnEditor(page);
 
     await fillBody(page, content);
     await page.waitForTimeout(600);
+    await assertStillOnEditor(page);
 
     // Ensure title still intact after body paste
     const titleNow = (
@@ -642,6 +921,7 @@ async function publish(
       await fillTitle(page, content.title);
     }
     await page.waitForTimeout(300);
+    await assertStillOnEditor(page);
 
     await clickPublishFlow(page);
 

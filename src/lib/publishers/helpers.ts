@@ -174,24 +174,36 @@ export async function waitForUrlOrToast(
   isSuccessUrl: (url: string) => boolean,
   toastPattern: RegExp,
   timeoutMs: number,
+  isEditorUrl?: (url: string) => boolean,
 ): Promise<string | null> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     for (const p of page.context().pages()) {
-      if (isSuccessUrl(p.url())) return p.url();
+      const url = p.url();
+      if (isEditorUrl?.(url)) continue;
+      if (isSuccessUrl(url)) return url;
     }
     const toast = page.getByText(toastPattern);
     if ((await toast.count()) > 0) {
       await page.waitForTimeout(1200);
       for (const p of page.context().pages()) {
-        if (isSuccessUrl(p.url())) return p.url();
+        const url = p.url();
+        if (isEditorUrl?.(url)) continue;
+        if (isSuccessUrl(url)) return url;
       }
-      return page.url();
+      // Toast alone is not enough while still on the editor page
+      const current = page.url();
+      if (!isEditorUrl?.(current) && isSuccessUrl(current)) return current;
+      if (!isEditorUrl?.(current) && !/\/(?:edit|publish|write|draft)/i.test(current)) {
+        return current;
+      }
     }
     await page.waitForTimeout(1000);
   }
   for (const p of page.context().pages()) {
-    if (isSuccessUrl(p.url())) return p.url();
+    const url = p.url();
+    if (isEditorUrl?.(url)) continue;
+    if (isSuccessUrl(url)) return url;
   }
   return null;
 }
@@ -263,9 +275,16 @@ export function createSimplePublisher(
       await page.waitForTimeout(2500);
       await dismissCommonOverlays(page);
 
+      const permissionDenied =
+        (await page
+          .getByText(/没有权限访问这个页面/)
+          .count()
+          .catch(() => 0)) > 0;
+
       if (
         cfg.loginUrlPattern.test(page.url()) ||
-        !(await isLoggedIn(page))
+        !(await isLoggedIn(page)) ||
+        permissionDenied
       ) {
         return {
           success: false,
@@ -317,13 +336,20 @@ export function createSimplePublisher(
         cfg.successUrl,
         toast,
         25_000,
+        cfg.isEditorUrl,
       );
       if (published) {
         return { success: true, url: published };
       }
 
       await captureDebugScreenshot(page, `${cfg.id}-await-manual`);
-      published = await waitForUrlOrToast(page, cfg.successUrl, toast, 3 * 60_000);
+      published = await waitForUrlOrToast(
+        page,
+        cfg.successUrl,
+        toast,
+        3 * 60_000,
+        cfg.isEditorUrl,
+      );
       if (published) {
         return { success: true, url: published };
       }
