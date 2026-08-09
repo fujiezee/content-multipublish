@@ -60,10 +60,9 @@ export function AccountsPanel() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">账号</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">本机账号</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          首次连接会打开有头浏览器，扫码或账密登录后自动保存 Cookie（不存密码）。
-          简书请登录成功并看到「写文章 / 新建文章」后再稍等，系统确认后会自动关闭窗口。
+          供「本机自动（实验）」使用：扫码登录后保存 Cookie。日常多平台同步请优先用编辑器里的扩展同步；在 Chrome 中登录各平台即可。
         </p>
       </div>
 

@@ -32,6 +32,8 @@ export type SessionStatus = "connected" | "disconnected" | "expired";
 
 export type JobStatus = "pending" | "running" | "success" | "failed";
 
+export type PublishEngine = "extension" | "playwright";
+
 export interface Article {
   id: string;
   title: string;
@@ -59,6 +61,8 @@ export interface PublishJob {
   result_url: string | null;
   error: string | null;
   screenshot_path: string | null;
+  /** extension = Chrome draft API; playwright = local browser automation */
+  engine: PublishEngine;
   created_at: string;
   updated_at: string;
 }

@@ -72,16 +72,9 @@ function shouldHandleBridgeAction(action) {
 
 function sendToWindow(msg) {
   msg.callReturn = true;
-  const serialized = JSON.stringify(msg);
-  window.postMessage(serialized, "*");
-  try {
-    const script = document.createElement("script");
-    script.textContent = `(function(){try{window.postMessage(${JSON.stringify(serialized)},"*");}catch(e){}})();`;
-    (document.documentElement || document.head).appendChild(script);
-    script.remove();
-  } catch (err) {
-    console.warn("[dianwu-geo] sendToWindow page inject failed:", err);
-  }
+  // Content-script postMessage reaches page listeners; do NOT inject inline
+  // <script> — localhost CSP blocks unsafe-inline.
+  window.postMessage(JSON.stringify(msg), "*");
 }
 
 function sendTaskUpdate(task) {
@@ -201,6 +194,87 @@ function updateAccountFromResult(result) {
     : null;
 }
 
+function notifyAccountResult(result) {
+  if (!result?.platform) return;
+  notifyPageSyncResult({
+    platform: result.platform,
+    success: !!result.success,
+    error: result.error,
+    postUrl: result.postUrl || result.url,
+    url: result.url || result.postUrl,
+  });
+}
+
+/**
+ * Apply sync results to currentAccounts and notify the page.
+ * SW broadcasts SYNC_PROGRESS via runtime.sendMessage (not received by content
+ * scripts); final SYNC_ARTICLE response + storage activeSyncState are reliable.
+ */
+function applySyncResults(results, { finalize = false } = {}) {
+  const list = Array.isArray(results) ? results : [];
+  for (const result of list) {
+    updateAccountFromResult(result);
+    notifyAccountResult(result);
+  }
+  if (finalize) {
+    for (const acc of currentAccounts) {
+      if (acc.status === "uploading") {
+        acc.status = "failed";
+        acc.error = acc.error || "未收到同步结果";
+        notifyAccountResult({
+          platform: acc.type,
+          success: false,
+          error: acc.error,
+        });
+      }
+    }
+  }
+  sendTaskUpdate({ accounts: currentAccounts });
+}
+
+function failAllAccounts(error) {
+  const msg = error || "扩展同步失败";
+  for (const acc of currentAccounts) {
+    acc.status = "failed";
+    acc.error = msg;
+    acc.msg = undefined;
+    notifyAccountResult({
+      platform: acc.type,
+      success: false,
+      error: msg,
+    });
+  }
+  sendTaskUpdate({ accounts: currentAccounts });
+}
+
+// Progressive updates via storage (SYNC_PROGRESS does not reach content scripts)
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.activeSyncState) return;
+  const state = changes.activeSyncState.newValue;
+  if (!state || !Array.isArray(state.results)) return;
+
+  if (currentSyncId || currentAccounts.length) {
+    applySyncResults(state.results, {
+      finalize: state.status === "completed",
+    });
+  } else if (state.status === "completed" && state.results.length) {
+    // Page reloaded mid-sync: still notify the editor page
+    for (const result of state.results) {
+      notifyPageSyncResult({
+        platform: result.platform,
+        success: !!result.success,
+        error: result.error,
+        postUrl: result.postUrl || result.url,
+        url: result.url || result.postUrl,
+      });
+    }
+  }
+
+  if (state.status === "completed") {
+    currentSyncId = null;
+  }
+});
+
 function buildPendingArticle(post) {
   const htmlContent = post.content || post.html || "";
   const articleTitle = resolveSyncTitle(post);
@@ -237,20 +311,12 @@ function notifyPageSyncResult(result) {
     method: "dianwuGeoSyncResult",
     ...result,
   };
-  const serialized = JSON.stringify(payload);
-  window.postMessage(serialized, "*");
+  // postMessage is enough for the editor page; avoid inline script (CSP).
+  window.postMessage(JSON.stringify(payload), "*");
   try {
     document.dispatchEvent(
       new CustomEvent("dianwu-geo-sync-result", { detail: payload }),
     );
-  } catch {
-    // ignore
-  }
-  try {
-    const script = document.createElement("script");
-    script.textContent = `(function(){try{var p=${JSON.stringify(serialized)};window.postMessage(p,"*");document.dispatchEvent(new CustomEvent("dianwu-geo-sync-result",{detail:JSON.parse(p)}));}catch(e){}})();`;
-    (document.head || document.documentElement).appendChild(script);
-    script.remove();
   } catch {
     // ignore
   }
@@ -390,6 +456,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (result) {
         updateAccountFromResult(result);
         sendTaskUpdate({ accounts: currentAccounts });
+        // Also notify page listeners (editor writes publish_jobs)
+        notifyPageSyncResult({
+          platform: result.platform,
+          success: !!result.success,
+          error: result.error,
+          postUrl: result.postUrl || result.url,
+          url: result.url || result.postUrl,
+        });
       }
     }
 
@@ -409,7 +483,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     if (message.type === "SYNC_COMPLETED" || message.type === "SYNC_COMPLETE") {
-      currentSyncId = null;
+      const results =
+        message.results ||
+        message.payload?.results ||
+        message.payload?.data?.results;
+      if (Array.isArray(results) && results.length) {
+        applySyncResults(results, { finalize: true });
+        currentSyncId = null;
+      } else {
+        chrome.storage.local.get("activeSyncState", (data) => {
+          const state = data?.activeSyncState;
+          if (state?.results?.length) {
+            applySyncResults(state.results, { finalize: true });
+          }
+          currentSyncId = null;
+        });
+      }
     }
   } catch (e) {
     console.error("[dianwu-geo] page bridge message error:", e);
@@ -458,6 +547,17 @@ function routeBridgeAction(action) {
     return;
   }
 
+  if (action.method === "getSyncState") {
+    // Same source as the popup "同步完成" UI — read storage directly.
+    chrome.storage.local.get("activeSyncState", (data) => {
+      sendToWindow({
+        eventID: action.eventID,
+        result: data?.activeSyncState || null,
+      });
+    });
+    return;
+  }
+
   if (action.method === "openSyncPage") {
     const pendingArticle = buildPendingArticle(action.article || {});
     if (!pendingArticle) {
@@ -482,6 +582,7 @@ function routeBridgeAction(action) {
     const { task } = action;
     const { post, accounts } = task;
     const platforms = accounts.map((a) => a.type);
+    const eventID = action.eventID;
 
     currentSyncId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
@@ -506,8 +607,16 @@ function routeBridgeAction(action) {
     const articleTitle = resolveSyncTitle(post);
     if (!articleTitle) {
       console.error("[dianwu-geo] addTask: missing article title");
+      failAllAccounts("缺少文章标题");
+      if (eventID != null) {
+        sendToWindow({
+          eventID,
+          result: { success: false, error: "缺少文章标题" },
+        });
+      }
       return;
     }
+
     chrome.runtime.sendMessage(
       {
         type: "SYNC_ARTICLE",
@@ -517,18 +626,71 @@ function routeBridgeAction(action) {
             content: htmlContent,
             html: htmlContent,
             markdown: post.markdown || "",
-            cover: post.thumb,
+            cover: post.thumb || post.cover,
           },
-          platforms: platforms,
+          platforms,
           skipHistory: true,
           source: "legacy-api",
           syncId: currentSyncId,
         },
       },
-      () => {
+      (resp) => {
+        const finish = (results, error) => {
+          if (error) {
+            failAllAccounts(error);
+            if (eventID != null) {
+              sendToWindow({
+                eventID,
+                result: { success: false, error },
+              });
+            }
+          } else {
+            applySyncResults(results || [], { finalize: true });
+            if (eventID != null) {
+              sendToWindow({
+                eventID,
+                result: { success: true, results: results || [] },
+              });
+            }
+          }
+          currentSyncId = null;
+        };
+
         if (chrome.runtime.lastError) {
-          console.error("[dianwu-geo] addTask:", chrome.runtime.lastError);
+          const err = chrome.runtime.lastError.message || "扩展同步失败";
+          console.error("[dianwu-geo] addTask:", err);
+          // Fallback: read activeSyncState written by the service worker
+          chrome.storage.local.get("activeSyncState", (data) => {
+            const state = data?.activeSyncState;
+            if (state?.results?.length) {
+              finish(state.results);
+            } else {
+              finish([], err);
+            }
+          });
+          return;
         }
+        if (resp?.error) {
+          chrome.storage.local.get("activeSyncState", (data) => {
+            const state = data?.activeSyncState;
+            if (state?.results?.length) {
+              finish(state.results);
+            } else {
+              finish([], String(resp.error));
+            }
+          });
+          return;
+        }
+
+        // Prefer response results; fall back to storage (popup UI reads this)
+        const fromResp = resp?.results;
+        if (Array.isArray(fromResp) && fromResp.length) {
+          finish(fromResp);
+          return;
+        }
+        chrome.storage.local.get("activeSyncState", (data) => {
+          finish(data?.activeSyncState?.results || []);
+        });
       },
     );
     return;

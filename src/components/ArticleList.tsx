@@ -60,7 +60,7 @@ export function ArticleList() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">文章</h1>
           <p className="mt-1 text-[var(--muted)]">
-            写一篇，分发到微博、百家号、知乎
+            写一篇，用扩展同步到各平台草稿箱
           </p>
         </div>
         <button className="btn btn-primary" onClick={createArticle} disabled={creating}>
@@ -74,7 +74,7 @@ export function ArticleList() {
         <div className="card p-10 text-center">
           <p className="text-lg">还没有文章</p>
           <p className="mt-2 text-sm text-[var(--muted)]">
-            创建一篇，再用 Playwright 推到各平台
+            创建一篇，用浏览器扩展同步到各平台草稿，确认后再发布
           </p>
           <button className="btn btn-primary mt-6" onClick={createArticle}>
             开始写作

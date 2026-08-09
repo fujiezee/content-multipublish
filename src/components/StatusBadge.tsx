@@ -4,7 +4,7 @@ import type { JobStatus, SessionStatus } from "@/lib/types";
 
 const jobMap: Record<JobStatus, { label: string; className: string }> = {
   pending: { label: "等待中", className: "badge-muted" },
-  running: { label: "发布中", className: "badge-run" },
+  running: { label: "同步中", className: "badge-run" },
   success: { label: "成功", className: "badge-ok" },
   failed: { label: "失败", className: "badge-danger" },
 };

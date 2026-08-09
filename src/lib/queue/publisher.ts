@@ -8,42 +8,53 @@ import {
 import { articleToPublishContent } from "@/lib/content/adapt";
 import { closeBrowser, openContext, saveSession } from "@/lib/publishers/browser";
 import { getPublisher } from "@/lib/publishers";
-import type { PlatformId, PublishJob } from "@/lib/types";
+import type { PlatformId, PublishEngine, PublishJob } from "@/lib/types";
 import type { BrowserContext, Page } from "playwright";
 import { randomUUID } from "crypto";
 
 let processing = false;
 
-export function enqueuePublish(articleId: string, platforms: PlatformId[]) {
+export function enqueuePublish(
+  articleId: string,
+  platforms: PlatformId[],
+  options: { engine?: PublishEngine } = {},
+) {
   const article = getArticle(articleId);
   if (!article) throw new Error("文章不存在");
   if (!platforms.length) throw new Error("请至少选择一个平台");
 
+  const engine: PublishEngine = options.engine ?? "playwright";
   const now = new Date().toISOString();
   const jobs: PublishJob[] = platforms.map((platform) => ({
     id: randomUUID(),
     article_id: articleId,
     platform,
-    status: "pending",
+    // Extension jobs start running — browser bridge updates them; never enter Playwright queue
+    status: engine === "extension" ? "running" : "pending",
     result_url: null,
     error: null,
     screenshot_path: null,
+    engine,
     created_at: now,
     updated_at: now,
   }));
   createJobs(jobs);
-  void processQueue();
+  if (engine === "playwright") {
+    void processQueue();
+  }
   return jobs;
 }
 
 export async function retryJob(jobId: string) {
   const job = getJob(jobId);
   if (!job) throw new Error("任务不存在");
+  // Retries always use Playwright queue (extension sync is initiated from the editor)
   updateJob(jobId, {
     status: "pending",
     error: null,
     result_url: null,
     screenshot_path: null,
+    engine: "playwright",
   });
   void processQueue();
   return getJob(jobId);

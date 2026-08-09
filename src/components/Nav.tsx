@@ -8,8 +8,8 @@ const links = [
   { href: "/keywords", label: "GEO 挖词" },
   { href: "/corpus", label: "语料库" },
   { href: "/writing", label: "AI 写文案" },
-  { href: "/accounts", label: "账号" },
-  { href: "/jobs", label: "发布记录" },
+  { href: "/accounts", label: "本机账号" },
+  { href: "/jobs", label: "同步记录" },
 ];
 
 export function Nav() {

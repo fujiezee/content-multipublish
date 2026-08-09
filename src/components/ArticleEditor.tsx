@@ -8,16 +8,36 @@ import { JobBadge } from "@/components/StatusBadge";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { toEditorHtml } from "@/lib/content/adapt";
 import {
+  accountDraftUrl,
+  addDianwuGeoTask,
   beginOpenDianwuGeoPanel,
-  stashArticleForDianwuGeo,
-  formatDianwuGeoOpenMessage,
-  getExtensionIdFromDom,
-  isDianwuGeoExtensionPresent,
-  pingDianwuGeoExtension,
-  waitForDianwuGeoExtension,
   DIANWU_GEO_PRODUCT_NAME,
+  formatDianwuGeoOpenMessage,
+  getDianwuGeoAccounts,
+  getDianwuGeoSyncState,
+  getExtensionIdFromDom,
+  isAccountSuccess,
+  isAccountTerminal,
+  isDianwuGeoExtensionPresent,
+  isExtensionPlatform,
+  pingDianwuGeoExtension,
+  stashArticleForDianwuGeo,
+  subscribeDianwuGeoSyncResults,
+  subscribeDianwuGeoTaskUpdates,
+  waitForDianwuGeoExtension,
+  type DianwuGeoAccount,
   type DianwuGeoOpenResult,
+  type DianwuGeoSyncState,
 } from "@/lib/dianwu-geo";
+
+const JOB_MAP_KEY = (articleId: string) => `dwgeo-ext-job-map:${articleId}`;
+type SyncResultLike = {
+  platform?: string;
+  success?: boolean;
+  error?: string;
+  postUrl?: string;
+  url?: string;
+};
 
 export function ArticleEditor({ id }: { id: string }) {
   const router = useRouter();
@@ -30,12 +50,10 @@ export function ArticleEditor({ id }: { id: string }) {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [showPublish, setShowPublish] = useState(false);
   const [sessions, setSessions] = useState<PlatformSession[]>([]);
-  // Default: core set only — avoid launching every platform at once
   const [selected, setSelected] = useState<PlatformId[]>([
     "zhihu",
     "weibo",
     "baijiahao",
-    "jianshu",
     "csdn",
     "toutiao",
     "juejin",
@@ -49,6 +67,12 @@ export function ArticleEditor({ id }: { id: string }) {
   const manualSyncRunningRef = useRef(false);
   const manualSyncWaitRef = useRef<Promise<DianwuGeoOpenResult> | null>(null);
   const jobsLoadingRef = useRef(false);
+  const jobsReloadQueuedRef = useRef(false);
+  const jobByPlatformRef = useRef<Map<PlatformId, string>>(new Map());
+  const extSyncCleanupRef = useRef<(() => void) | null>(null);
+  const patchedJobStatusRef = useRef<Map<string, "success" | "failed">>(
+    new Map(),
+  );
 
   const load = useCallback(async () => {
     try {
@@ -66,12 +90,15 @@ export function ArticleEditor({ id }: { id: string }) {
       setSummary(a.summary);
       setCoverPath(a.cover_path);
     } catch {
-      // Transient network errors (e.g. dev server restart) — keep current editor state.
+      // Transient network errors — keep current editor state.
     }
   }, [id, router]);
 
   const loadJobs = useCallback(async () => {
-    if (jobsLoadingRef.current) return;
+    if (jobsLoadingRef.current) {
+      jobsReloadQueuedRef.current = true;
+      return;
+    }
     jobsLoadingRef.current = true;
     try {
       const res = await fetch(`/api/articles/${id}/jobs`, { cache: "no-store" });
@@ -82,6 +109,10 @@ export function ArticleEditor({ id }: { id: string }) {
       // Polling must not crash the page when the API is briefly unavailable.
     } finally {
       jobsLoadingRef.current = false;
+      if (jobsReloadQueuedRef.current) {
+        jobsReloadQueuedRef.current = false;
+        void loadJobs();
+      }
     }
   }, [id]);
 
@@ -171,43 +202,12 @@ export function ArticleEditor({ id }: { id: string }) {
     }
   }
 
-  async function openPublish() {
+  async function openSyncModal() {
     if (dirty) await save();
     const res = await fetch("/api/platforms");
     const data = await res.json();
     setSessions(data.sessions ?? []);
     setShowPublish(true);
-  }
-
-  async function publish() {
-    setPublishing(true);
-    setMessage(null);
-    try {
-      const res = await fetch("/api/publish", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ articleId: id, platforms: selected }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessage(data.error || "发布失败");
-        return;
-      }
-      setShowPublish(false);
-      setMessage("已加入发布队列：一次只开一个平台，完成或关闭窗口后再发下一个");
-      await loadJobs();
-    } finally {
-      setPublishing(false);
-    }
-  }
-
-  async function onCover(file: File | null) {
-    if (!file) return;
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch("/api/upload", { method: "POST", body: form });
-    const data = await res.json();
-    if (data.path) setCoverPath(data.path);
   }
 
   function buildManualSyncArticle() {
@@ -230,13 +230,442 @@ export function ArticleEditor({ id }: { id: string }) {
     };
   }
 
+  async function patchJob(
+    jobId: string,
+    patch: {
+      status: "success" | "failed" | "running";
+      result_url?: string | null;
+      error?: string | null;
+    },
+  ): Promise<boolean> {
+    if (patch.status === "success" || patch.status === "failed") {
+      const prev = patchedJobStatusRef.current.get(jobId);
+      if (prev === patch.status) return true;
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (res.ok) {
+          if (patch.status === "success" || patch.status === "failed") {
+            patchedJobStatusRef.current.set(jobId, patch.status);
+          }
+          return true;
+        }
+      } catch {
+        // retry once
+      }
+    }
+    return false;
+  }
+
+  function persistJobMap(map: Map<PlatformId, string>) {
+    const raw = JSON.stringify(Object.fromEntries(map));
+    try {
+      localStorage.setItem(JOB_MAP_KEY(id), raw);
+    } catch {
+      // ignore
+    }
+    try {
+      sessionStorage.setItem(JOB_MAP_KEY(id), raw);
+    } catch {
+      // ignore
+    }
+  }
+
+  function restoreJobMap(): Map<PlatformId, string> {
+    for (const store of [localStorage, sessionStorage]) {
+      try {
+        const raw = store.getItem(JOB_MAP_KEY(id));
+        if (!raw) continue;
+        const obj = JSON.parse(raw) as Record<string, string>;
+        return new Map(
+          Object.entries(obj).map(([k, v]) => [k as PlatformId, v]),
+        );
+      } catch {
+        // try next store
+      }
+    }
+    return new Map();
+  }
+
+  function resolveJobId(platform: string): string | undefined {
+    const map = jobByPlatformRef.current;
+    const direct = map.get(platform as PlatformId);
+    if (direct) return direct;
+    for (const [pid, jid] of map) {
+      if (pid.toLowerCase() === platform.toLowerCase()) return jid;
+    }
+    return undefined;
+  }
+
+  async function applyResultList(results: SyncResultLike[]) {
+    let wrote = false;
+    for (const result of results) {
+      if (!result.platform) continue;
+      const jobId = resolveJobId(result.platform);
+      if (!jobId) continue;
+      if (result.success) {
+        wrote =
+          (await patchJob(jobId, {
+            status: "success",
+            result_url: result.postUrl || result.url || null,
+            error: null,
+          })) || wrote;
+      } else {
+        wrote =
+          (await patchJob(jobId, {
+            status: "failed",
+            error: result.error || "扩展同步失败",
+            result_url: null,
+          })) || wrote;
+      }
+    }
+    if (wrote) await loadJobs();
+    return wrote;
+  }
+
+  async function applyExtensionAccountUpdate(account: DianwuGeoAccount) {
+    const platform = account.type as PlatformId;
+    const jobId = resolveJobId(platform);
+    if (!jobId || !isAccountTerminal(account)) return;
+
+    if (isAccountSuccess(account)) {
+      await patchJob(jobId, {
+        status: "success",
+        result_url: accountDraftUrl(account),
+        error: null,
+      });
+    } else {
+      await patchJob(jobId, {
+        status: "failed",
+        error: account.error || account.msg || "扩展同步失败",
+        result_url: null,
+      });
+    }
+    void loadJobs();
+  }
+
+  async function finalizeCompletedSync(
+    platforms: PlatformId[],
+    state: DianwuGeoSyncState | null,
+  ) {
+    if (state?.results?.length) {
+      await applyResultList(state.results);
+    }
+    if (state?.status !== "completed") return false;
+
+    let wrote = false;
+    for (const pid of platforms) {
+      const jobId = resolveJobId(pid);
+      if (!jobId) continue;
+      if (patchedJobStatusRef.current.has(jobId)) continue;
+      wrote =
+        (await patchJob(jobId, {
+          status: "failed",
+          error: "扩展未返回该平台结果",
+        })) || wrote;
+    }
+    if (wrote) await loadJobs();
+    return true;
+  }
+
+  async function applySyncStateToJobs(state: DianwuGeoSyncState | null) {
+    if (!state?.results?.length && state?.status !== "completed") return false;
+    if (state.results?.length) {
+      await applyResultList(state.results);
+    }
+    return state.status === "completed";
+  }
+
+  function stopExtensionSyncWatchers() {
+    extSyncCleanupRef.current?.();
+    extSyncCleanupRef.current = null;
+  }
+
+  function startExtensionSyncWatchers(platforms: PlatformId[]) {
+    stopExtensionSyncWatchers();
+
+    const unsubTask = subscribeDianwuGeoTaskUpdates(async (update) => {
+      for (const acc of update.accounts || []) {
+        await applyExtensionAccountUpdate(acc);
+      }
+    });
+
+    const unsubResult = subscribeDianwuGeoSyncResults(async (result) => {
+      await applyResultList([result]);
+    });
+
+    const timeoutId = window.setTimeout(async () => {
+      const map = jobByPlatformRef.current;
+      const state = await getDianwuGeoSyncState(3_000);
+      if (state?.status === "completed") {
+        await finalizeCompletedSync(platforms, state);
+      } else {
+        await applySyncStateToJobs(state);
+        const latest = await fetch(`/api/articles/${id}/jobs`, {
+          cache: "no-store",
+        })
+          .then((r) => r.json())
+          .catch(() => ({ jobs: [] }));
+        for (const j of (latest.jobs ?? []) as PublishJob[]) {
+          if (map.get(j.platform) === j.id && j.status === "running") {
+            await patchJob(j.id, {
+              status: "failed",
+              error: "扩展同步超时，请在 Chrome 确认平台已登录后重试",
+            });
+          }
+        }
+        void loadJobs();
+      }
+      stopExtensionSyncWatchers();
+    }, 3 * 60_000);
+
+    // Primary recovery: poll activeSyncState (popup "同步完成" reads this)
+    const pollId = window.setInterval(() => {
+      void (async () => {
+        const state = await getDianwuGeoSyncState(2_500);
+        if (state?.status === "completed") {
+          await finalizeCompletedSync(platforms, state);
+        } else {
+          await applySyncStateToJobs(state);
+        }
+
+        const map = jobByPlatformRef.current;
+        const listRes = await fetch(`/api/articles/${id}/jobs`, {
+          cache: "no-store",
+        })
+          .then((r) => r.json())
+          .catch(() => ({ jobs: [] }));
+        const list = (listRes.jobs ?? []) as PublishJob[];
+        setJobs(list);
+        const allDone = platforms.every((pid) => {
+          const jobId = map.get(pid);
+          const job = list.find((j) => j.id === jobId);
+          return (
+            !!job && (job.status === "success" || job.status === "failed")
+          );
+        });
+        if (allDone) stopExtensionSyncWatchers();
+      })();
+    }, 1500);
+
+    extSyncCleanupRef.current = () => {
+      unsubTask();
+      unsubResult();
+      window.clearTimeout(timeoutId);
+      window.clearInterval(pollId);
+    };
+  }
+
+  /**
+   * Kick off extension sync and return immediately — do not block the UI.
+   * Final results are applied when addTask resolves + background watchers.
+   */
+  async function runExtensionSync(platforms: PlatformId[]) {
+    const articlePayload = buildManualSyncArticle();
+    stashArticleForDianwuGeo(articlePayload);
+
+    const res = await fetch("/api/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        articleId: id,
+        platforms,
+        engine: "extension",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "创建扩展同步任务失败");
+    }
+
+    const created = (data.jobs ?? []) as PublishJob[];
+    const map = restoreJobMap();
+    for (const j of created) {
+      map.set(j.platform, j.id);
+      patchedJobStatusRef.current.delete(j.id);
+    }
+    jobByPlatformRef.current = map;
+    persistJobMap(map);
+
+    const extAccounts = await getDianwuGeoAccounts(2_500);
+
+    const accounts: DianwuGeoAccount[] = platforms.map((pid) => {
+      const fromExt = extAccounts.find((a) => a.type === pid);
+      if (fromExt)
+        return { ...fromExt, status: "uploading", msg: "准备同步..." };
+      const meta = PLATFORMS.find((p) => p.id === pid);
+      return {
+        type: pid,
+        title: meta?.name || pid,
+        displayName: meta?.name || pid,
+        supportTypes: ["html"],
+        status: "uploading",
+        msg: "准备同步...",
+      };
+    });
+
+    startExtensionSyncWatchers(platforms);
+
+    // Do not block the publish button on full sync completion
+    void addDianwuGeoTask(
+      {
+        post: {
+          title: articlePayload.title,
+          content: articlePayload.content,
+          thumb: articlePayload.thumb,
+          desc: articlePayload.desc,
+        },
+        accounts,
+      },
+      async (update) => {
+        for (const acc of update.accounts || []) {
+          await applyExtensionAccountUpdate(acc);
+        }
+      },
+    )
+      .then(async (out) => {
+        if (out.results?.length) {
+          await applyResultList(out.results);
+        }
+        const state = await getDianwuGeoSyncState(3_000);
+        if (state?.status === "completed") {
+          await finalizeCompletedSync(platforms, state);
+        } else if (state?.results?.length) {
+          await applyResultList(state.results);
+        }
+      })
+      .catch(async (err) => {
+        const msg =
+          err instanceof Error ? err.message : "扩展同步任务提交失败";
+        for (const pid of platforms) {
+          const jobId = resolveJobId(pid);
+          if (!jobId || patchedJobStatusRef.current.has(jobId)) continue;
+          await patchJob(jobId, { status: "failed", error: msg });
+        }
+        void loadJobs();
+      });
+
+    await loadJobs();
+  }
+
+  async function runPlaywrightSync(platforms: PlatformId[]) {
+    const res = await fetch("/api/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        articleId: id,
+        platforms,
+        engine: "playwright",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "加入本机自动队列失败");
+    }
+  }
+
+  async function startSync() {
+    setPublishing(true);
+    setMessage(null);
+    try {
+      if (dirty) await save();
+
+      const extPlatforms = selected.filter((p) => isExtensionPlatform(p));
+      const pwPlatforms = selected.filter((p) => !isExtensionPlatform(p));
+
+      const extOk =
+        extensionReady === true ||
+        isDianwuGeoExtensionPresent() ||
+        (await waitForDianwuGeoExtension(2_000));
+
+      const parts: string[] = [];
+
+      if (extPlatforms.length && extOk) {
+        setExtensionReady(true);
+        await runExtensionSync(extPlatforms);
+        parts.push(
+          `已启动扩展同步 ${extPlatforms.length} 个平台（草稿优先，进度见下方记录）`,
+        );
+      } else if (extPlatforms.length && !extOk) {
+        setExtensionReady(false);
+        await runPlaywrightSync(extPlatforms);
+        parts.push(
+          `未检测到扩展，已将 ${extPlatforms.length} 个平台改走本机自动`,
+        );
+      }
+
+      if (pwPlatforms.length) {
+        await runPlaywrightSync(pwPlatforms);
+        parts.push(
+          `本机自动队列 ${pwPlatforms.length} 个平台（一次一窗，关窗后继续）`,
+        );
+      }
+
+      setShowPublish(false);
+      setMessage(parts.join("；") || "已提交同步");
+      await loadJobs();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   useEffect(() => {
-    if (!jobs.some((j) => j.status === "pending" || j.status === "running")) return;
+    return () => stopExtensionSyncWatchers();
+  }, []);
+
+  // Resume / recover: poll extension activeSyncState while jobs stay "running"
+  useEffect(() => {
+    if (!clientMounted) return;
+    const runningExt = jobs.filter(
+      (j) => j.engine === "extension" && j.status === "running",
+    );
+    if (!runningExt.length) return;
+
+    const map = restoreJobMap();
+    for (const j of runningExt) {
+      map.set(j.platform, j.id);
+    }
+    jobByPlatformRef.current = map;
+    persistJobMap(map);
+
+    const platforms = runningExt.map((j) => j.platform);
+    if (!extSyncCleanupRef.current) {
+      startExtensionSyncWatchers(platforms);
+    }
+    void getDianwuGeoSyncState(3_000).then(async (state) => {
+      if (state?.status === "completed") {
+        await finalizeCompletedSync(platforms, state);
+      } else {
+        await applySyncStateToJobs(state);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- recover whenever running ext jobs appear
+  }, [clientMounted, jobs]);
+
+  async function onCover(file: File | null) {
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/upload", { method: "POST", body: form });
+    const data = await res.json();
+    if (data.path) setCoverPath(data.path);
+  }
+
+  useEffect(() => {
+    if (!jobs.some((j) => j.status === "pending" || j.status === "running"))
+      return;
     const t = setInterval(() => void loadJobs(), 2000);
     return () => clearInterval(t);
   }, [jobs, loadJobs]);
 
-  async function runManualSync() {
+  async function runOpenExtensionPanel() {
     if (manualSyncRunningRef.current || syncingExt) return;
     manualSyncRunningRef.current = true;
     setSyncingExt(true);
@@ -246,12 +675,13 @@ export function ArticleEditor({ id }: { id: string }) {
       const ready = await waitForDianwuGeoExtension(3_000);
       if (!ready) {
         const domMarker = getExtensionIdFromDom();
-        const origin = typeof window !== "undefined" ? window.location.origin : "";
+        const origin =
+          typeof window !== "undefined" ? window.location.origin : "";
         setExtensionReady(false);
         setMessage(
           domMarker
             ? `${DIANWU_GEO_PRODUCT_NAME}已连接但页面桥接未就绪，请硬刷新（Cmd+Shift+R）后重试。`
-            : `未检测到${DIANWU_GEO_PRODUCT_NAME}。请确认：① chrome://extensions 已加载「未打包的扩展程序」目录 tools/dianwu-geo（不是 tools/wechatsync）；② 扩展已启用；③ 用 ${origin.includes("localhost") ? origin : "http://localhost:3000"} 打开本页；④ 加载扩展后硬刷新本页。`,
+            : `未检测到${DIANWU_GEO_PRODUCT_NAME}。请在 chrome://extensions 加载 tools/dianwu-geo，并用 ${origin.includes("localhost") || origin.includes("127.0.0.1") ? origin : "http://localhost:3000"} 打开本页后硬刷新。`,
         );
         manualSyncRunningRef.current = false;
         setSyncingExt(false);
@@ -279,54 +709,77 @@ export function ArticleEditor({ id }: { id: string }) {
     }
   }
 
-  function handleManualSyncPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
+  function handleOpenPanelPointerDown(e: React.PointerEvent<HTMLButtonElement>) {
     if (e.button !== 0 || manualSyncRunningRef.current || !title.trim()) return;
     const { wait } = beginOpenDianwuGeoPanel(buildManualSyncArticle());
     manualSyncWaitRef.current = wait;
-    void runManualSync();
+    void runOpenExtensionPanel();
   }
 
   if (!article) {
     return <div className="card p-8 text-[var(--muted)]">加载中…</div>;
   }
 
+  const extSelected = selected.filter((p) => isExtensionPlatform(p)).length;
+  const pwSelected = selected.length - extSelected;
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <button className="btn btn-ghost" onClick={() => router.push("/")}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => router.push("/")}
+        >
           ← 返回
         </button>
         <div className="flex items-center gap-2">
           {savedAt && (
             <span className="text-sm text-[var(--muted)]">已保存 {savedAt}</span>
           )}
-          <button className="btn btn-ghost" onClick={save} disabled={saving || !dirty}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={save}
+            disabled={saving || !dirty}
+          >
             {saving ? "保存中…" : dirty ? "保存" : "已保存"}
           </button>
           <button
             type="button"
             className="btn btn-ghost"
-            onPointerDown={handleManualSyncPointerDown}
+            onPointerDown={handleOpenPanelPointerDown}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                void runManualSync();
+                void runOpenExtensionPanel();
               }
             }}
             disabled={syncingExt || !title.trim()}
-            title={
-              clientMounted && extensionReady === false
-                ? `未检测到扩展，请重新加载 tools/dianwu-geo`
-                : `打开浏览器扩展「${DIANWU_GEO_PRODUCT_NAME}」面板（建议先固定到工具栏）`
-            }
+            title={`仅打开扩展面板，在面板内手勾平台（${DIANWU_GEO_PRODUCT_NAME}）`}
           >
-            {syncingExt ? "拉起中…" : "手动多平台同步"}
+            {syncingExt ? "拉起中…" : "打开扩展面板"}
           </button>
-          <button className="btn btn-primary" onClick={openPublish}>
-            全自动发布到平台
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void openSyncModal()}
+            disabled={!title.trim()}
+          >
+            多平台同步
           </button>
         </div>
       </div>
+
+      {clientMounted && extensionReady === false && (
+        <div className="card border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-950">
+          未检测到{DIANWU_GEO_PRODUCT_NAME}。请在{" "}
+          <code className="rounded bg-white/80 px-1">chrome://extensions</code>{" "}
+          开发者模式加载仓库内{" "}
+          <code className="rounded bg-white/80 px-1">tools/dianwu-geo</code>
+          ，用 localhost 打开本页并硬刷新。仍可点「多平台同步」走本机自动（实验）。
+        </div>
+      )}
 
       {message && (
         <div className="card border-[var(--accent)]/30 bg-[var(--accent-soft)]/50 px-4 py-3 text-sm">
@@ -395,16 +848,24 @@ export function ArticleEditor({ id }: { id: string }) {
 
       {jobs.length > 0 && (
         <div className="card p-5">
-          <h2 className="text-lg font-medium">本文发布记录</h2>
+          <h2 className="text-lg font-medium">本文同步记录</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            扩展任务同步为草稿；成功后请打开链接确认再发布
+          </p>
           <ul className="mt-3 space-y-2">
-            {jobs.slice(0, 8).map((job) => (
+            {jobs.slice(0, 12).map((job) => (
               <li
                 key={job.id}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[#fffdf9] px-3 py-2.5"
               >
                 <div className="flex items-center gap-2">
                   <JobBadge status={job.status} />
-                  <span>{PLATFORMS.find((p) => p.id === job.platform)?.name}</span>
+                  <span>
+                    {PLATFORMS.find((p) => p.id === job.platform)?.name}
+                  </span>
+                  <span className="text-xs text-[var(--muted)]">
+                    {job.engine === "extension" ? "扩展" : "本机自动"}
+                  </span>
                 </div>
                 <div className="text-sm text-[var(--muted)]">
                   {job.result_url ? (
@@ -414,7 +875,7 @@ export function ArticleEditor({ id }: { id: string }) {
                       rel="noreferrer"
                       className="underline"
                     >
-                      查看链接
+                      {job.engine === "extension" ? "打开草稿" : "查看链接"}
                     </a>
                   ) : (
                     job.error || new Date(job.updated_at).toLocaleString("zh-CN")
@@ -430,15 +891,20 @@ export function ArticleEditor({ id }: { id: string }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/35 p-4">
           <div className="card flex max-h-[min(85vh,720px)] w-full max-w-lg flex-col p-0 shadow-2xl">
             <div className="shrink-0 border-b border-[var(--line)] px-6 py-5">
-              <h2 className="text-xl font-semibold">选择发布平台</h2>
+              <h2 className="text-xl font-semibold">多平台同步</h2>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                将串行打开发布浏览器窗口，请保持本机可用
+                扩展覆盖的平台走草稿 API；其余走本机自动（实验）。已选扩展{" "}
+                {extSelected} / 本机 {pwSelected}
+                {extensionReady === false
+                  ? " · 当前未检测到扩展，扩展平台将回落本机自动"
+                  : ""}
               </p>
             </div>
             <ul className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4">
               {PLATFORMS.map((p) => {
                 const session = sessions.find((s) => s.platform === p.id);
                 const connected = session?.status === "connected";
+                const viaExt = isExtensionPlatform(p.id);
                 return (
                   <li
                     key={p.id}
@@ -461,28 +927,50 @@ export function ArticleEditor({ id }: { id: string }) {
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium">{p.name}</span>
                           <span
-                            className={`badge ${connected ? "badge-ok" : "badge-warn"}`}
+                            className={`badge ${viaExt ? "badge-ok" : "badge-warn"}`}
                           >
-                            {connected ? "已连接" : "未连接"}
+                            {viaExt ? "扩展·草稿" : "本机自动"}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs text-[var(--muted)]">{p.limits}</p>
+                        <p className="mt-1 text-xs text-[var(--muted)]">
+                          {p.limits}
+                          {!viaExt && (
+                            <span>
+                              {" "}
+                              · 本机会话
+                              {connected ? "已连接" : "未连接（将弹窗登录）"}
+                            </span>
+                          )}
+                        </p>
                       </div>
                     </label>
                   </li>
                 );
               })}
             </ul>
-            <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-6 py-4">
-              <button className="btn btn-ghost" onClick={() => setShowPublish(false)}>
+            <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-[var(--line)] px-6 py-4">
+              <button
+                className="btn btn-ghost mr-auto"
+                type="button"
+                onPointerDown={handleOpenPanelPointerDown}
+                disabled={syncingExt || !title.trim()}
+              >
+                仅打开扩展面板
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setShowPublish(false)}
+              >
                 取消
               </button>
               <button
+                type="button"
                 className="btn btn-primary"
                 disabled={publishing || selected.length === 0}
-                onClick={publish}
+                onClick={() => void startSync()}
               >
-                {publishing ? "提交中…" : "开始发布"}
+                {publishing ? "同步中…" : "开始同步"}
               </button>
             </div>
           </div>

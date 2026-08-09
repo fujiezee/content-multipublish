@@ -34,6 +34,10 @@
     callFunc({ method: "getAccounts" }, cb);
   };
 
+  poster.getSyncState = function (cb) {
+    callFunc({ method: "getSyncState" }, cb);
+  };
+
   poster.addTask = function (task, statueandler, cb) {
     _statueandler = statueandler;
     callFunc({ method: "addTask", task: task }, cb);

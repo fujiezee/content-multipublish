@@ -7,7 +7,7 @@ export const metadata: Metadata = {
     default: "文章编辑",
     template: "%s · 文章编辑",
   },
-  description: "本机多平台文章发布：Playwright 同步 + 点物GEO 扩展分发",
+  description: "本机多平台文章同步：Chrome 扩展草稿分发优先，本机 Playwright 半自动兜底",
 };
 
 export default function RootLayout({

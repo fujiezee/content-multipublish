@@ -144,6 +144,13 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
     sendResponse({ ok: true });
     return;
   }
+  if (message.type === "GET_SYNC_STATE") {
+    replyAsync(async () => {
+      const data = await chrome.storage.local.get("activeSyncState");
+      return { syncState: data?.activeSyncState || null };
+    }, sendResponse);
+    return true;
+  }
   if (message.type === "OPEN_ACTION_POPUP") {
     replyAsync(() => handleOpenActionPopupMessage(message, sender), sendResponse);
     return true;

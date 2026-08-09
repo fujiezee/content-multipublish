@@ -1,8 +1,34 @@
 /** Browser bridge for 点物GEO 文章多平台同步助手 Chrome extension (dianwu.ai). */
 
+import type { PlatformId } from "@/lib/types";
+
 export const DIANWU_GEO_PRODUCT_NAME = "点物GEO 文章多平台同步助手";
 
 export const PENDING_ARTICLE_STORAGE_KEY = "dianwu-geo-pending-article";
+
+/** Platforms with draft API adapters in tools/dianwu-geo. */
+export const EXTENSION_PLATFORM_IDS: readonly PlatformId[] = [
+  "zhihu",
+  "juejin",
+  "toutiao",
+  "weibo",
+  "bilibili",
+  "baijiahao",
+  "csdn",
+  "yuque",
+  "douban",
+  "sohu",
+  "xueqiu",
+  "weixin",
+  "woshipm",
+  "segmentfault",
+] as const;
+
+export const EXTENSION_PLATFORM_ID_SET = new Set<PlatformId>(EXTENSION_PLATFORM_IDS);
+
+export function isExtensionPlatform(id: PlatformId): boolean {
+  return EXTENSION_PLATFORM_ID_SET.has(id);
+}
 
 export type DianwuGeoArticle = {
   title: string;
@@ -18,6 +44,46 @@ export type DianwuGeoOpenResult = {
   ok?: boolean;
 };
 
+export type DianwuGeoAccount = {
+  type: string;
+  title?: string;
+  displayName?: string;
+  icon?: string;
+  avatar?: string;
+  uid?: string;
+  home?: string;
+  supportTypes?: string[];
+  status?: string;
+  msg?: string;
+  error?: string;
+  editResp?: { draftLink?: string; url?: string } | null;
+};
+
+export type DianwuGeoTaskUpdate = {
+  accounts: DianwuGeoAccount[];
+};
+
+export type DianwuGeoSyncResultEvent = {
+  method?: string;
+  platform?: string;
+  success?: boolean;
+  error?: string;
+  postUrl?: string;
+  url?: string;
+};
+
+export type DianwuGeoAddTaskResult = {
+  success?: boolean;
+  error?: string;
+  results?: DianwuGeoSyncResultEvent[];
+};
+
+export type DianwuGeoSyncState = {
+  status?: string;
+  results?: DianwuGeoSyncResultEvent[];
+  selectedPlatforms?: string[];
+};
+
 const PLACEHOLDER_THUMB = "/geo-sync/article-placeholder.svg";
 const EXTENSION_DIR = "tools/dianwu-geo";
 
@@ -25,6 +91,17 @@ type PageSyncer = {
   openSyncPage: (
     article: Record<string, unknown>,
     cb: (err: string | null, res?: DianwuGeoOpenResult) => void,
+  ) => void;
+  getAccounts?: (
+    cb: (err: string | null, accounts?: DianwuGeoAccount[]) => void,
+  ) => void;
+  getSyncState?: (
+    cb: (err: string | null, state?: DianwuGeoSyncState | null) => void,
+  ) => void;
+  addTask?: (
+    task: { post: Record<string, unknown>; accounts: DianwuGeoAccount[] },
+    statusHandler: ((task: DianwuGeoTaskUpdate) => void) | null,
+    cb?: (err: string | null, res?: DianwuGeoAddTaskResult) => void,
   ) => void;
 };
 
@@ -457,4 +534,303 @@ export function formatDianwuGeoOpenMessage(result?: DianwuGeoOpenResult): string
     return `已打开${DIANWU_GEO_PRODUCT_NAME}。请在面板中勾选平台并同步。`;
   }
   return `已请求打开${DIANWU_GEO_PRODUCT_NAME}。若未看到窗口，请重新加载扩展后重试。`;
+}
+
+function waitForBridgeResult<T>(eventID: number, timeoutMs = 15_000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      fn();
+    };
+    const timer = window.setTimeout(() => {
+      settle(() => reject(extensionNotRespondingError()));
+    }, timeoutMs);
+    const onMessage = (evt: MessageEvent) => {
+      if (typeof evt.data !== "string") return;
+      const payload = parseBridgeMessage(evt.data);
+      if (!payload?.callReturn || payload.eventID !== eventID) return;
+      settle(() => resolve((payload.result ?? payload) as T));
+    };
+    window.addEventListener("message", onMessage);
+  });
+}
+
+/** List accounts the extension sees as logged-in (Chrome cookies). */
+export async function getDianwuGeoAccounts(
+  timeoutMs = 3_000,
+): Promise<DianwuGeoAccount[]> {
+  if (typeof window === "undefined") return [];
+  attachReadyListener();
+  await waitForDianwuGeoExtension(1_500);
+
+  if (window.$syncer?.getAccounts) {
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => resolve([]), timeoutMs);
+      try {
+        window.$syncer!.getAccounts!((err, accounts) => {
+          window.clearTimeout(timer);
+          if (err) {
+            resolve([]);
+            return;
+          }
+          resolve(Array.isArray(accounts) ? accounts : []);
+        });
+      } catch {
+        window.clearTimeout(timer);
+        resolve([]);
+      }
+    });
+  }
+
+  try {
+    const eventID = Math.floor(Date.now() + Math.random() * 100_000);
+    const wait = waitForBridgeResult<DianwuGeoAccount[]>(eventID, timeoutMs);
+    dispatchBridgeRequest({ method: "getAccounts", eventID });
+    const result = await wait;
+    return Array.isArray(result) ? result : [];
+  } catch {
+    return [];
+  }
+}
+
+const ADD_TASK_TIMEOUT_MS = 3 * 60_000;
+
+function normalizeAddTaskResults(res: unknown): DianwuGeoSyncResultEvent[] {
+  if (!res || typeof res !== "object") return [];
+  const results = (res as DianwuGeoAddTaskResult).results;
+  return Array.isArray(results) ? results : [];
+}
+
+/**
+ * Start extension draft sync for given accounts.
+ * Resolves when the extension returns final results (or times out).
+ * Progress also arrives via subscribeDianwuGeoTaskUpdates / statusHandler.
+ */
+export async function addDianwuGeoTask(
+  task: {
+    post: {
+      title: string;
+      content: string;
+      markdown?: string;
+      thumb?: string;
+      desc?: string;
+    };
+    accounts: DianwuGeoAccount[];
+  },
+  statusHandler?: (update: DianwuGeoTaskUpdate) => void,
+): Promise<DianwuGeoAddTaskResult> {
+  if (typeof window === "undefined") {
+    throw new Error("no window");
+  }
+  attachReadyListener();
+  if (!(await waitForDianwuGeoExtension(3_000))) {
+    throw extensionMissingError();
+  }
+
+  const post = {
+    title: task.post.title,
+    content: task.post.content,
+    html: task.post.content,
+    markdown: task.post.markdown || "",
+    thumb: task.post.thumb,
+    desc: task.post.desc,
+  };
+
+  if (window.$syncer?.addTask) {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        resolve({ success: true, results: [] });
+      }, ADD_TASK_TIMEOUT_MS);
+      try {
+        window.$syncer!.addTask!(
+          { post, accounts: task.accounts },
+          (update) => statusHandler?.(update),
+          (err, res) => {
+            window.clearTimeout(timer);
+            if (err) {
+              reject(
+                new Error(typeof err === "string" ? err : "扩展同步任务提交失败"),
+              );
+              return;
+            }
+            resolve({
+              success: true,
+              results: normalizeAddTaskResults(res),
+            });
+          },
+        );
+      } catch (err) {
+        window.clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  const eventID = Math.floor(Date.now() + Math.random() * 100_000);
+  const wait = waitForBridgeResult<DianwuGeoAddTaskResult>(
+    eventID,
+    ADD_TASK_TIMEOUT_MS,
+  );
+  dispatchBridgeRequest({
+    method: "addTask",
+    eventID,
+    task: { post, accounts: task.accounts },
+  });
+  try {
+    const result = await wait;
+    if (result && typeof result === "object" && result.success === false) {
+      throw new Error(result.error || "扩展同步失败");
+    }
+    return {
+      success: true,
+      results: normalizeAddTaskResults(result),
+    };
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("未响应")) {
+      return { success: true, results: [] };
+    }
+    throw err;
+  }
+}
+
+/** Listen for extension task progress (per-platform done/failed + draft links). */
+export function subscribeDianwuGeoTaskUpdates(
+  cb: (update: DianwuGeoTaskUpdate) => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+
+  const onMessage = (evt: MessageEvent) => {
+    if (typeof evt.data !== "string") return;
+    try {
+      const payload = JSON.parse(evt.data) as {
+        method?: string;
+        task?: DianwuGeoTaskUpdate;
+      };
+      if (payload.method !== "taskUpdate" || !payload.task?.accounts) return;
+      cb(payload.task);
+    } catch {
+      // ignore
+    }
+  };
+
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+function isSyncStatePayload(value: unknown): value is DianwuGeoSyncState {
+  if (!value || typeof value !== "object") return false;
+  if ("callReturn" in value && !("results" in value) && !("status" in value)) {
+    return false;
+  }
+  return "results" in value || "status" in value || "selectedPlatforms" in value;
+}
+
+/** Read active sync state from the extension (same source as the popup UI). */
+export async function getDianwuGeoSyncState(
+  timeoutMs = 4_000,
+): Promise<DianwuGeoSyncState | null> {
+  if (typeof window === "undefined") return null;
+  attachReadyListener();
+
+  if (window.$syncer?.getSyncState) {
+    try {
+      const viaSyncer = await new Promise<DianwuGeoSyncState | null>(
+        (resolve) => {
+          const timer = window.setTimeout(() => resolve(null), timeoutMs);
+          try {
+            window.$syncer!.getSyncState!((err, state) => {
+              window.clearTimeout(timer);
+              if (err) {
+                resolve(null);
+                return;
+              }
+              resolve(isSyncStatePayload(state) ? state : null);
+            });
+          } catch {
+            window.clearTimeout(timer);
+            resolve(null);
+          }
+        },
+      );
+      if (viaSyncer) return viaSyncer;
+    } catch {
+      // fall through
+    }
+  }
+
+  try {
+    const eventID = Math.floor(Date.now() + Math.random() * 100_000);
+    const wait = waitForBridgeResult<DianwuGeoSyncState | null>(
+      eventID,
+      timeoutMs,
+    );
+    dispatchBridgeRequest({ method: "getSyncState", eventID });
+    const result = await wait;
+    if (isSyncStatePayload(result)) return result;
+  } catch {
+    // External messaging fallback
+  }
+
+  if (window.__DWGEO_EXTENSION_ID__ && getExtensionRuntime()?.sendMessage) {
+    try {
+      const resp = await sendExternalExtensionMessage<{
+        syncState?: DianwuGeoSyncState;
+      }>({ type: "GET_SYNC_STATE" }, timeoutMs);
+      return resp?.syncState ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Per-platform result events from the content script. */
+export function subscribeDianwuGeoSyncResults(
+  cb: (result: DianwuGeoSyncResultEvent) => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+
+  const onMessage = (evt: MessageEvent) => {
+    if (typeof evt.data !== "string") return;
+    try {
+      const payload = JSON.parse(evt.data) as DianwuGeoSyncResultEvent;
+      if (payload.method !== "dianwuGeoSyncResult") return;
+      if (!payload.platform) return;
+      cb(payload);
+    } catch {
+      // ignore
+    }
+  };
+
+  const onCustom = (evt: Event) => {
+    const detail = (evt as CustomEvent).detail as DianwuGeoSyncResultEvent;
+    if (!detail?.platform) return;
+    cb(detail);
+  };
+
+  window.addEventListener("message", onMessage);
+  document.addEventListener("dianwu-geo-sync-result", onCustom);
+  return () => {
+    window.removeEventListener("message", onMessage);
+    document.removeEventListener("dianwu-geo-sync-result", onCustom);
+  };
+}
+
+export function accountDraftUrl(account: DianwuGeoAccount): string | null {
+  const link = account.editResp?.draftLink || account.editResp?.url;
+  return link?.trim() || null;
+}
+
+export function isAccountTerminal(account: DianwuGeoAccount): boolean {
+  const s = (account.status || "").toLowerCase();
+  return s === "done" || s === "failed" || s === "error" || s === "success";
+}
+
+export function isAccountSuccess(account: DianwuGeoAccount): boolean {
+  const s = (account.status || "").toLowerCase();
+  return s === "done" || s === "success";
 }

@@ -54,9 +54,9 @@ export function JobsPanel() {
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight">发布记录</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">同步记录</h1>
           <p className="mt-1 text-[var(--muted)]">
-            串行执行 · 失败可重试 · 调试截图在 data/debug/
+            扩展草稿同步 + 本机自动兜底 · 失败可重试 · 调试截图在 data/debug/
           </p>
         </div>
         <button className="btn btn-ghost" onClick={() => void load()}>
@@ -83,6 +83,8 @@ export function JobsPanel() {
                       <Link className="underline" href={`/articles/${job.article_id}`}>
                         {job.article_id.slice(0, 8)}…
                       </Link>
+                      {" · "}
+                      {job.engine === "extension" ? "扩展" : "本机自动"}
                       {" · "}
                       {new Date(job.updated_at).toLocaleString("zh-CN")}
                     </div>

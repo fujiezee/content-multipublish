@@ -12,6 +12,7 @@ import {
   type JobStatus,
   type PlatformId,
   type PlatformSession,
+  type PublishEngine,
   type PublishJob,
   type SessionStatus,
 } from "@/lib/types";
@@ -57,6 +58,7 @@ function migrate(database: Database.Database) {
       result_url TEXT,
       error TEXT,
       screenshot_path TEXT,
+      engine TEXT NOT NULL DEFAULT 'playwright',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
@@ -118,6 +120,7 @@ function migrate(database: Database.Database) {
   `);
 
   migrateGeoKeywordArticleLinks(database);
+  migratePublishJobEngine(database);
 
   for (const platform of ALL_PLATFORM_IDS) {
     database
@@ -227,39 +230,57 @@ export function upsertSession(
 export function createJobs(jobs: PublishJob[]) {
   const stmt = getDb().prepare(
     `INSERT INTO publish_jobs
-     (id, article_id, platform, status, result_url, error, screenshot_path, created_at, updated_at)
-     VALUES (@id, @article_id, @platform, @status, @result_url, @error, @screenshot_path, @created_at, @updated_at)`,
+     (id, article_id, platform, status, result_url, error, screenshot_path, engine, created_at, updated_at)
+     VALUES (@id, @article_id, @platform, @status, @result_url, @error, @screenshot_path, @engine, @created_at, @updated_at)`,
   );
   const tx = getDb().transaction((rows: PublishJob[]) => {
-    for (const row of rows) stmt.run(row);
+    for (const row of rows) {
+      stmt.run({
+        ...row,
+        engine: row.engine === "extension" ? "extension" : "playwright",
+      });
+    }
   });
   tx(jobs);
 }
 
 export function getJob(id: string): PublishJob | undefined {
-  return getDb().prepare("SELECT * FROM publish_jobs WHERE id = ?").get(id) as
-    | PublishJob
-    | undefined;
+  return normalizeJob(
+    getDb().prepare("SELECT * FROM publish_jobs WHERE id = ?").get(id) as
+      | PublishJob
+      | undefined,
+  );
 }
 
 export function listJobs(limit = 100): PublishJob[] {
-  return getDb()
+  const rows = getDb()
     .prepare("SELECT * FROM publish_jobs ORDER BY created_at DESC LIMIT ?")
     .all(limit) as PublishJob[];
+  return rows.flatMap((row) => {
+    const n = normalizeJob(row);
+    return n ? [n] : [];
+  });
 }
 
 export function listJobsByArticle(articleId: string): PublishJob[] {
-  return getDb()
+  const rows = getDb()
     .prepare(
       "SELECT * FROM publish_jobs WHERE article_id = ? ORDER BY created_at DESC",
     )
     .all(articleId) as PublishJob[];
+  return rows.flatMap((row) => {
+    const n = normalizeJob(row);
+    return n ? [n] : [];
+  });
 }
 
 export function updateJob(
   id: string,
   patch: Partial<
-    Pick<PublishJob, "status" | "result_url" | "error" | "screenshot_path">
+    Pick<
+      PublishJob,
+      "status" | "result_url" | "error" | "screenshot_path" | "engine"
+    >
   >,
 ) {
   const existing = getJob(id);
@@ -268,27 +289,35 @@ export function updateJob(
     ...existing,
     ...patch,
     status: (patch.status ?? existing.status) as JobStatus,
+    engine: (patch.engine ?? existing.engine ?? "playwright") as PublishEngine,
     updated_at: new Date().toISOString(),
   };
   getDb()
     .prepare(
       `UPDATE publish_jobs
        SET status = @status, result_url = @result_url, error = @error,
-           screenshot_path = @screenshot_path, updated_at = @updated_at
+           screenshot_path = @screenshot_path, engine = @engine,
+           updated_at = @updated_at
        WHERE id = @id`,
     )
     .run(next);
   return next;
 }
 
+/** Only Playwright jobs — extension jobs are driven by the browser bridge. */
 export function listPendingJobs(): PublishJob[] {
-  return getDb()
+  const rows = getDb()
     .prepare(
       `SELECT * FROM publish_jobs
        WHERE status = 'pending'
+         AND (engine IS NULL OR engine = '' OR engine = 'playwright')
        ORDER BY created_at ASC`,
     )
     .all() as PublishJob[];
+  return rows.flatMap((row) => {
+    const n = normalizeJob(row);
+    return n ? [n] : [];
+  });
 }
 
 export function listCorpusItems(): CorpusItem[] {
@@ -438,6 +467,29 @@ function migrateGeoKeywordArticleLinks(database: Database.Database) {
   } catch (err) {
     console.warn("[db] migrate geo keyword article links:", err);
   }
+}
+
+function migratePublishJobEngine(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(publish_jobs)`)
+      .all() as { name: string }[];
+    if (!cols.some((c) => c.name === "engine")) {
+      database.exec(
+        `ALTER TABLE publish_jobs ADD COLUMN engine TEXT NOT NULL DEFAULT 'playwright'`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate publish_jobs.engine:", err);
+  }
+}
+
+function normalizeJob(row: PublishJob | undefined): PublishJob | undefined {
+  if (!row) return undefined;
+  return {
+    ...row,
+    engine: (row.engine === "extension" ? "extension" : "playwright") as PublishEngine,
+  };
 }
 
 export function linkGeoKeywordArticle(
