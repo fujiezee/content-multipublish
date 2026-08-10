@@ -136,21 +136,27 @@ export function GeoKeywordPanel() {
   });
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">GEO 挖词</h1>
-        <p className="mt-1 text-[var(--muted)]">
-          输入主词，AI 联想长尾词与文章标题；全库去重，可直接 AI 写文并记录关联
-        </p>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">GEO 挖词</h1>
+          <p className="mt-1 text-[var(--muted)]">
+            输入主词，AI 联想长尾词与文章标题；全库去重，可直接 AI 写文并记录关联
+          </p>
+        </div>
+        <Link href="/writing" className="btn btn-ghost text-sm">
+          AI 写文案 →
+        </Link>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
-        <div className="card space-y-4 p-6">
+        <div className="card space-y-4 p-5">
+          <h2 className="text-lg font-medium">挖词需求</h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block sm:col-span-2">
               <span className="mb-1 block text-sm text-[var(--muted)]">主词 *</span>
               <input
-                className="input w-full"
+                className="field"
                 placeholder="例如：点物GEO、企业品牌营销、AI 客服"
                 value={seed}
                 onChange={(e) => setSeed(e.target.value)}
@@ -161,7 +167,7 @@ export function GeoKeywordPanel() {
                 背景说明（可选）
               </span>
               <textarea
-                className="input min-h-[88px] w-full"
+                className="field min-h-[88px] resize-y"
                 placeholder="行业、产品、目标人群、地域…帮助 AI 挖得更准"
                 value={context}
                 onChange={(e) => setContext(e.target.value)}
@@ -170,7 +176,7 @@ export function GeoKeywordPanel() {
             <label className="block">
               <span className="mb-1 block text-sm text-[var(--muted)]">每次生成数量</span>
               <select
-                className="input w-full"
+                className="field"
                 value={count}
                 onChange={(e) => setCount(Number(e.target.value))}
               >
@@ -182,7 +188,7 @@ export function GeoKeywordPanel() {
             </label>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 pt-2">
             <button
               type="button"
               className="btn btn-primary"
@@ -208,7 +214,7 @@ export function GeoKeywordPanel() {
           )}
         </div>
 
-        <aside className="card p-4">
+        <aside className="card p-5">
           <h2 className="mb-3 text-sm font-medium text-[var(--muted)]">历史主词</h2>
           {mines.length === 0 ? (
             <p className="text-sm text-[var(--muted)]">暂无记录</p>
@@ -246,16 +252,16 @@ export function GeoKeywordPanel() {
       </div>
 
       {keywords.length > 0 && (
-        <div className="card p-6">
+        <div className="card p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">
+            <h2 className="text-lg font-medium">
               长尾词列表
               <span className="ml-2 text-sm font-normal text-[var(--muted)]">
                 共 {keywords.length} 条
               </span>
             </h2>
             <input
-              className="input w-full max-w-xs"
+              className="field max-w-xs"
               placeholder="筛选关键词或标题…"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}

@@ -1,6 +1,10 @@
 import { createArticle, linkGeoKeywordArticle } from "@/lib/db";
 import { streamBrandCopy } from "@/lib/ai/copywriting";
-import type { CopywritingKind, CorpusCategory } from "@/lib/types";
+import type {
+  CopywritingKind,
+  CopywritingStyle,
+  CorpusCategory,
+} from "@/lib/types";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -11,6 +15,13 @@ const VALID_KINDS = new Set<CopywritingKind>([
   "social",
   "article",
   "slogan",
+]);
+
+const VALID_STYLES = new Set<CopywritingStyle>([
+  "default",
+  "dan_koe",
+  "jinqiang",
+  "lijiaoshou",
 ]);
 
 const VALID_CATEGORIES = new Set<CorpusCategory>([
@@ -27,6 +38,9 @@ function parseBody(body: unknown) {
   const kind = VALID_KINDS.has(record.kind as CopywritingKind)
     ? (record.kind as CopywritingKind)
     : "brand_intro";
+  const style = VALID_STYLES.has(record.style as CopywritingStyle)
+    ? (record.style as CopywritingStyle)
+    : "default";
   const tone = typeof record.tone === "string" ? record.tone : undefined;
   const saveAsArticle = record.saveAsArticle === true;
   const stream = record.stream !== false;
@@ -40,7 +54,17 @@ function parseBody(body: unknown) {
     : undefined;
   const geoKeywordId =
     typeof record.geoKeywordId === "string" ? record.geoKeywordId.trim() : "";
-  return { brief, kind, tone, saveAsArticle, stream, categories, corpusIds, geoKeywordId };
+  return {
+    brief,
+    kind,
+    style,
+    tone,
+    saveAsArticle,
+    stream,
+    categories,
+    corpusIds,
+    geoKeywordId,
+  };
 }
 
 function saveGeneratedArticle(
@@ -67,8 +91,17 @@ function saveGeneratedArticle(
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const { brief, kind, tone, saveAsArticle, stream, categories, corpusIds, geoKeywordId } =
-    parseBody(body);
+  const {
+    brief,
+    kind,
+    style,
+    tone,
+    saveAsArticle,
+    stream,
+    categories,
+    corpusIds,
+    geoKeywordId,
+  } = parseBody(body);
 
   if (!brief) {
     return Response.json({ error: "请描述你想写什么文案" }, { status: 400 });
@@ -80,6 +113,7 @@ export async function POST(req: Request) {
       const result = await generateBrandCopy({
         kind,
         brief,
+        style,
         tone,
         categories,
         corpusIds,
@@ -107,7 +141,7 @@ export async function POST(req: Request) {
 
       try {
         for await (const event of streamBrandCopy(
-          { kind, brief, tone, categories, corpusIds },
+          { kind, brief, style, tone, categories, corpusIds },
           { signal: abort.signal },
         )) {
           if (event.type === "done" && saveAsArticle) {

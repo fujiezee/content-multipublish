@@ -111,6 +111,9 @@ export type CopywritingKind =
   | "article"
   | "slogan";
 
+/** AI 文案风格 */
+export type CopywritingStyle = "default" | "dan_koe" | "jinqiang" | "lijiaoshou";
+
 export const CORPUS_CATEGORIES: {
   id: CorpusCategory;
   label: string;
@@ -133,6 +136,29 @@ export const COPYWRITING_KINDS: {
   { id: "social", label: "社媒短帖", hint: "微博、小红书、朋友圈" },
   { id: "article", label: "长文初稿", hint: "公众号、专栏文章大纲+正文" },
   { id: "slogan", label: "标语口号", hint: "多条 Slogan 备选" },
+];
+
+export const COPYWRITING_STYLES: {
+  id: CopywritingStyle;
+  label: string;
+  hint: string;
+}[] = [
+  { id: "default", label: "默认", hint: "专业、真诚、有温度" },
+  {
+    id: "dan_koe",
+    label: "Dan Koe",
+    hint: "短句、原则断言、高能动身份叙事",
+  },
+  {
+    id: "jinqiang",
+    label: "金枪大叔",
+    hint: "挑衅起手、口语相声腔、语言钉+反扣",
+  },
+  {
+    id: "lijiaoshou",
+    label: "李叫兽",
+    hint: "认知反转、结构化说理、可转述模型",
+  },
 ];
 
 /** GEO 挖词：搜索意图分类 */

@@ -2,8 +2,13 @@ import { marked } from "marked";
 import { listCorpusItems } from "@/lib/db";
 import { chatCompletion, streamChatCompletion } from "@/lib/ai/deepseek";
 import { stripBodyLabel } from "@/lib/ai/strip-body-label";
-import type { CopywritingKind, CorpusCategory, CorpusItem } from "@/lib/types";
-import { COPYWRITING_KINDS, CORPUS_CATEGORIES } from "@/lib/types";
+import type {
+  CopywritingKind,
+  CopywritingStyle,
+  CorpusCategory,
+  CorpusItem,
+} from "@/lib/types";
+import { COPYWRITING_KINDS, COPYWRITING_STYLES, CORPUS_CATEGORIES } from "@/lib/types";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -13,6 +18,7 @@ export type GenerateCopyInput = {
   categories?: CorpusCategory[];
   corpusIds?: string[];
   tone?: string;
+  style?: CopywritingStyle;
 };
 
 export type GeneratedCopy = {
@@ -44,12 +50,50 @@ const KIND_INSTRUCTIONS: Record<CopywritingKind, string> = {
   slogan: "生成 5-8 条品牌 Slogan 或广告语备选，每条单独一行，附一句简短说明。",
 };
 
+const STYLE_INSTRUCTIONS: Record<CopywritingStyle, string> = {
+  default:
+    "专业、真诚、有温度，避免空洞形容词堆砌。结构清楚，便于阅读与二次编辑。",
+  dan_koe: `模仿 Dan Koe（thedankoe）的写作气质，但必须用中文输出（专有名词可保留英文）：
+- 开篇用一句强断言/原则句抓住注意力，而不是铺垫故事。
+- 多用短句与单句成段，节奏干净，像「写给自己的笔记」。
+- 少用套话与模糊词（很、非常、赋能、助力等）；主动语态，观点鲜明。
+- 从身份与高能动（agency）切入：不是教人技巧清单，而是重塑读者如何看待自己与选择。
+- 结构可参考：问题诊断 → 放大后果 → 给出可执行的新视角/流程；CTA 轻、不硬推。
+- 排版留白感强，避免 emoji 堆砌与鸡汤空话。`,
+  jinqiang: `模仿广告鬼才「金枪大叔」（岳华平）的口播/文案气质，必须用中文输出：
+- 人设口吻：30 年广告老炮替中小老板说真话——不正经的智者，敢揭穿套路，不装专家腔。
+- 黄金三秒起手，任选一类钩子：
+  1) 挑衅判决：「X 可以开除了 / X 都混不下去了」；
+  2) 反向常识：「X 不重要，Y 才重要 / 没有 X 就没有 Y」；
+  3) 排比反问：连续 3–5 个「为啥你…？」把共鸣叠到峰值再给出口；
+  4) 反讽断言：把公认事实倒过来说。
+- 语言：口语 + 江湖味儿，像单口相声而不是领导发言；可用「忽悠」「三板斧」「跑江湖」这类烟火词，抖包袱，忌「品牌调性」「用户画像」「赋能」等空术语。
+- 结构用「小火车 + 反扣」：车头抛反常识判断 → 车身每几句一个新刺激（类比/自嘲/真实场景/行业反讽）→ 车尾金句反扣开头。
+- 核心招式：分类列举（三板斧、十六字诊断这类可转述判断）；提炼「语言钉」——短、浅、好记、可重复（如 Boss 直聘式致命卖点），效果优先于逼格。
+- 价值落点：帮读者少被忽悠、敢做生意；解气但不人身攻击；不得编造客户案例或数据，语料没有的事实不要硬写。`,
+  lijiaoshou: `模仿「李叫兽」式认知营销文案气质，必须用中文输出：
+- 开篇先抛一个「大多数人以为…其实…」的认知冲突，而不是堆卖点或鸡汤。
+- 用清晰结构说理：现象 → 常见误解 → 底层原因（可用简单模型/框架命名）→ 可执行结论。
+- 语言理性、克制、像朋友讲透一件事；少口号、少煽情、少江湖口语；多用日常类比把抽象讲清楚。
+- 每段只推进一步认知；关键判断要可转述（读者看完能复述给别人）。
+- 结尾给「下一步怎么做」的具体动作，避免空泛「重视/加强/赋能」。
+- 不得编造实验数据、调研数字或客户案例；语料没有的事实不要硬写。`,
+};
+
 function categoryLabel(id: CorpusCategory) {
   return CORPUS_CATEGORIES.find((c) => c.id === id)?.label ?? id;
 }
 
 function kindLabel(id: CopywritingKind) {
   return COPYWRITING_KINDS.find((k) => k.id === id)?.label ?? id;
+}
+
+function styleLabel(id: CopywritingStyle) {
+  return COPYWRITING_STYLES.find((s) => s.id === id)?.label ?? id;
+}
+
+function resolveStyle(style?: CopywritingStyle): CopywritingStyle {
+  return style && style in STYLE_INSTRUCTIONS ? style : "default";
 }
 
 function scoreCorpusItem(item: CorpusItem, brief: string, categories: CorpusCategory[]) {
@@ -115,8 +159,17 @@ export function buildCopywritingMessages(input: GenerateCopyInput) {
     corpusIds: input.corpusIds,
   });
 
+  const style = resolveStyle(input.style);
+  const extraTone = input.tone?.trim();
+  const toneLine =
+    style === "default"
+      ? extraTone || STYLE_INSTRUCTIONS.default
+      : `${STYLE_INSTRUCTIONS[style]}${extraTone ? `\n额外语气补充：${extraTone}` : ""}`;
+
   const system = `你是资深品牌文案顾问。你必须优先依据用户提供的语料库事实写作，不得编造语料中不存在的公司名、数据、客户案例或资质。
-语气要求：${input.tone?.trim() || "专业、真诚、有温度，避免空洞形容词堆砌。"}
+写作风格：${styleLabel(style)}
+语气与风格要求：
+${toneLine}
 输出格式（严格遵守）：
 第一行：标题: （一行标题）
 第二行：摘要: （50字以内摘要）

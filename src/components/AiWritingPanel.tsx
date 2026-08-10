@@ -3,8 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { CopywritingKind, CorpusCategory, CorpusItem } from "@/lib/types";
-import { COPYWRITING_KINDS, CORPUS_CATEGORIES } from "@/lib/types";
+import type {
+  CopywritingKind,
+  CopywritingStyle,
+  CorpusCategory,
+  CorpusItem,
+} from "@/lib/types";
+import {
+  COPYWRITING_KINDS,
+  COPYWRITING_STYLES,
+  CORPUS_CATEGORIES,
+} from "@/lib/types";
 import { stripBodyLabel } from "@/lib/ai/strip-body-label";
 
 type PreviewState = {
@@ -25,6 +34,7 @@ export function AiWritingPanel() {
 
   const [corpus, setCorpus] = useState<CorpusItem[]>([]);
   const [kind, setKind] = useState<CopywritingKind>("brand_intro");
+  const [style, setStyle] = useState<CopywritingStyle>("default");
   const [brief, setBrief] = useState("");
   const [tone, setTone] = useState("专业、真诚、有温度");
   const [categories, setCategories] = useState<CorpusCategory[]>([
@@ -121,8 +131,9 @@ export function AiWritingPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           kind,
+          style,
           brief,
-          tone,
+          tone: style === "default" ? tone : tone.trim() || undefined,
           categories,
           stream: true,
           saveAsArticle,
@@ -293,6 +304,29 @@ export function AiWritingPanel() {
               </button>
             ))}
           </div>
+          <div>
+            <div className="mb-2 text-sm text-[var(--muted)]">写作风格</div>
+            <div className="flex flex-wrap gap-2">
+              {COPYWRITING_STYLES.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  title={s.hint}
+                  className={`btn text-sm ${style === s.id ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => {
+                    setStyle(s.id);
+                    if (s.id === "default") {
+                      setTone((prev) => prev.trim() || "专业、真诚、有温度");
+                    } else if (tone === "专业、真诚、有温度") {
+                      setTone("");
+                    }
+                  }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <textarea
             className="field min-h-[140px] w-full resize-y"
             placeholder="描述你想写什么，例如：为点物 GEO 写一段 200 字品牌介绍，强调多平台分发与本地可控…"
@@ -301,7 +335,11 @@ export function AiWritingPanel() {
           />
           <input
             className="field w-full"
-            placeholder="语气风格（可选）"
+            placeholder={
+              style === "default"
+                ? "语气补充（可选）"
+                : "额外语气补充（可选，会叠在所选风格上）"
+            }
             value={tone}
             onChange={(e) => setTone(e.target.value)}
           />
