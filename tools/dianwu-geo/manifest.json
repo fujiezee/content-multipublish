@@ -241,6 +241,56 @@
         "id": "segmentfault_rules",
         "enabled": true,
         "path": "rules/segmentfault.json"
+      },
+      {
+        "id": "cnblogs_rules",
+        "enabled": true,
+        "path": "rules/cnblogs.json"
+      },
+      {
+        "id": "cto51_rules",
+        "enabled": true,
+        "path": "rules/cto51.json"
+      },
+      {
+        "id": "imooc_rules",
+        "enabled": true,
+        "path": "rules/imooc.json"
+      },
+      {
+        "id": "oschina_rules",
+        "enabled": true,
+        "path": "rules/oschina.json"
+      },
+      {
+        "id": "eastmoney_rules",
+        "enabled": true,
+        "path": "rules/eastmoney.json"
+      },
+      {
+        "id": "jianshu_rules",
+        "enabled": true,
+        "path": "rules/jianshu.json"
+      },
+      {
+        "id": "netease_rules",
+        "enabled": true,
+        "path": "rules/netease.json"
+      },
+      {
+        "id": "dayu_rules",
+        "enabled": true,
+        "path": "rules/dayu.json"
+      },
+      {
+        "id": "sohufocus_rules",
+        "enabled": true,
+        "path": "rules/sohufocus.json"
+      },
+      {
+        "id": "yidian_rules",
+        "enabled": true,
+        "path": "rules/yidian.json"
       }
     ]
   }

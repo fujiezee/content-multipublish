@@ -14,13 +14,36 @@
   <body>
     <div id="root"></div>
     <script src="../../popup-article-hotreload.js"></script>
+    <script src="../../popup-sync-bridge-settings.js"></script>
     <style>
+      /* Fit Chrome action-popup max height so the BROWSER chrome never scrolls */
       html,
-      body,
-      #root {
-        height: 100%;
+      body {
         margin: 0;
-        overflow: hidden;
+        overflow: hidden !important;
+        width: 420px;
+        height: 600px;
+        max-height: 600px;
+      }
+      #root {
+        margin: 0;
+        overflow: hidden !important;
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+      }
+      /* App shell */
+      #root > div.flex.flex-col {
+        height: 100% !important;
+        max-height: 100% !important;
+        overflow: hidden !important;
+      }
+      /* Only the platform list / main content scrolls */
+      #root main {
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
       }
     </style>
   </body>

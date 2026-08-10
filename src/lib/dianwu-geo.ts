@@ -22,6 +22,16 @@ export const EXTENSION_PLATFORM_IDS: readonly PlatformId[] = [
   "weixin",
   "woshipm",
   "segmentfault",
+  "cnblogs",
+  "cto51",
+  "imooc",
+  "oschina",
+  "eastmoney",
+  "jianshu",
+  "netease",
+  "dayu",
+  "sohufocus",
+  "yidian",
 ] as const;
 
 export const EXTENSION_PLATFORM_ID_SET = new Set<PlatformId>(EXTENSION_PLATFORM_IDS);

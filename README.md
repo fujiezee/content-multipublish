@@ -56,16 +56,35 @@ npm run browsers
 1. **扩展**：按上文加载 `tools/dianwu-geo`，并在 Chrome 登录目标平台
 2. **文章**：新建文章，填写标题、摘要、封面与正文
 3. **同步**：编辑器点「多平台同步」，勾选平台后开始；扩展覆盖的平台同步到**草稿**，完成后可打开草稿链接确认发布
-4. **API 草稿（实验）**：思否等在「账号」页已连接本机会话时，可走 Node 草稿 API（无需开浏览器窗口）
-5. **本机自动（实验）**：扩展未覆盖或未安装时，可用 Playwright 串行打开编辑页；失败截图在 `data/debug/`。补封面/标签后请关闭窗口，队列才会继续
+4. **CLI / MCP 桥接**：用命令行或 Agent 经 WebSocket（默认 `9527`）驱动同一套扩展草稿同步（见下节）
+5. **API 草稿（实验）**：思否等在「账号」页已连接本机会话时，可走 Node 草稿 API（无需开浏览器窗口）
+6. **本机自动（实验）**：扩展未覆盖或未安装时，可用 Playwright 串行打开编辑页；失败截图在 `data/debug/`。补封面/标签后请关闭窗口，队列才会继续
 
 默认不会一次勾选全部平台。API / 扩展 / 本机自动可混选，按平台能力分流。
+
+### CLI / MCP（Wechatsync 式编排）
+
+扩展内已有 MCP WebSocket 客户端；仓库提供配套服务端与命令行：
+
+```bash
+cd tools/dianwu-geo-cli && npm install && npm run build
+# 终端 A：桥接服务
+npm run geo:serve
+# 扩展 Popup：开启「MCP 连接」，底部确认地址 ws://127.0.0.1:9527
+# 终端 B：
+npm run geo:platforms -- --auth
+npm run geo:sync -- tools/dianwu-geo-cli/fixtures/sample.md -p juejin
+```
+
+Agent 接入：`npm run geo:mcp`（stdio MCP + 同时监听 WS）。说明见 [`tools/dianwu-geo-cli/README.md`](tools/dianwu-geo-cli/README.md)。
+
+远程桥接：`SYNC_WS_HOST=0.0.0.0 DIANWU_GEO_TOKEN=secret npm run geo:serve`，扩展填写对应 `ws://<host>:9527` 与同一 Token。
 
 ## 支持的平台（28）
 
 知乎、微博、百家号、简书、CSDN、头条号、掘金、微信公众号、B站专栏、豆瓣、搜狐号、大鱼号、一点号、博客园、51CTO、思否、慕课手记、开源中国、语雀、人人都是产品经理、雪球、搜狐焦点、小红书、抖音图文、网易号、什么值得买、东方财富、X。
 
-其中扩展草稿同步覆盖约 14 个（知乎、掘金、头条、微博、B站、百家号、CSDN、语雀、豆瓣、搜狐、雪球、微信、人人都是产品经理、思否等）；思否在本机会话已连接时可优先走 Node API 草稿；其余走本机自动。
+其中扩展草稿同步覆盖约 24 个（知乎、掘金、头条、微博、B站、百家号、CSDN、语雀、豆瓣、搜狐、雪球、微信、人人都是产品经理、思否、博客园、51CTO、慕课手记、开源中国、东方财富、简书、网易号、大鱼号、搜狐焦点、一点号等）；思否在本机会话已连接时可优先走 Node API 草稿；其余走本机自动。
 
 未包含：WordPress / Typecho（需站点 URL 与 XML-RPC 等单独配置）、Hexo/Hugo（导出类）。
 
@@ -73,6 +92,7 @@ npm run browsers
 
 ```
 tools/dianwu-geo/       # Chrome 扩展（主同步路径）
+tools/dianwu-geo-cli/   # CLI / MCP WebSocket 桥（编排层）
 src/lib/dianwu-geo.ts   # 编辑器 ↔ 扩展桥接
 src/lib/draft-adapters/ # Node 草稿 API（Cookie + HTTP，实验）
 src/lib/publishers/     # 各平台 Playwright 适配器（兜底）

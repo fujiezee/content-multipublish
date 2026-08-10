@@ -1,0 +1,71 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.163.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.163.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.163.com/wemedia/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.163.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.163.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.163.com/api/v3/upload/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.163.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.163.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "upload.ws.126.net/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

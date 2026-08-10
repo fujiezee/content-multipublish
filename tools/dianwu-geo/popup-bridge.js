@@ -3,8 +3,8 @@
 async function openSyncPageFallbackWindow(path = "", windowId) {
   const url =
     chrome.runtime.getURL("src/popup/index.html") + (path ? `#${path}` : "");
-  const width = 400;
-  const height = 620;
+  const width = 420;
+  const height = 600;
   const anchor =
     windowId !== undefined
       ? await chrome.windows.get(windowId)

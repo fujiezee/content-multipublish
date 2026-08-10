@@ -1,0 +1,25 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://blog.51cto.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://blog.51cto.com/blogger/publish"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "blog.51cto.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

@@ -13,7 +13,12 @@
     "lint": "eslint",
     "browsers": "playwright install chromium",
     "postinstall": "npm run browsers",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "geo:build": "npm run build --prefix tools/dianwu-geo-cli",
+    "geo:serve": "npm run start --prefix tools/dianwu-geo-cli",
+    "geo:mcp": "npm run dianwu-geo --prefix tools/dianwu-geo-cli -- mcp",
+    "geo:sync": "npm run dianwu-geo --prefix tools/dianwu-geo-cli -- sync",
+    "geo:platforms": "npm run dianwu-geo --prefix tools/dianwu-geo-cli -- platforms"
   },
   "dependencies": {
     "@tiptap/extension-highlight": "^3.29.2",
