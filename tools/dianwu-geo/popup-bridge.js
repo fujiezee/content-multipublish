@@ -75,11 +75,18 @@ async function handleOpenActionPopupMessage(message, sender) {
   if (message.pendingArticle) {
     // Drop recovered sync state so popup does not keep showing the previous article.
     await clearStaleSyncState();
+    const stamped = {
+      ...message.pendingArticle,
+      _openedAt: Date.now(),
+    };
+    const familyVariants =
+      stamped.familyVariants && typeof stamped.familyVariants === "object"
+        ? stamped.familyVariants
+        : {};
     await chrome.storage.local.set({
-      pendingArticle: {
-        ...message.pendingArticle,
-        _openedAt: Date.now(),
-      },
+      pendingArticle: stamped,
+      // Survives popup clearing pendingArticle after load into React state.
+      dwgeoFamilyVariants: familyVariants,
     });
   }
   return openActionPopup({
@@ -124,6 +131,29 @@ async function injectPageBridge(tabId) {
   return { success: true, extensionId, injectUrl };
 }
 
+async function handleSetFamilyVariants(message) {
+  const familyVariants =
+    message.familyVariants && typeof message.familyVariants === "object"
+      ? message.familyVariants
+      : {};
+  await chrome.storage.local.set({ dwgeoFamilyVariants: familyVariants });
+  // Keep pendingArticle in sync if it still exists (before popup consumes it).
+  try {
+    const data = await chrome.storage.local.get("pendingArticle");
+    if (data?.pendingArticle) {
+      await chrome.storage.local.set({
+        pendingArticle: {
+          ...data.pendingArticle,
+          familyVariants,
+        },
+      });
+    }
+  } catch {
+    // ignore
+  }
+  return { success: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "INJECT_PAGE_BRIDGE") {
     const tabId = sender.tab?.id;
@@ -132,6 +162,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     replyAsync(() => injectPageBridge(tabId), sendResponse);
+    return true;
+  }
+  if (message.type === "SET_FAMILY_VARIANTS") {
+    replyAsync(() => handleSetFamilyVariants(message), sendResponse);
     return true;
   }
   if (message.type !== "OPEN_ACTION_POPUP") return;
@@ -149,6 +183,19 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
       const data = await chrome.storage.local.get("activeSyncState");
       return { syncState: data?.activeSyncState || null };
     }, sendResponse);
+    return true;
+  }
+  if (message.type === "GET_SYNC_HISTORY") {
+    replyAsync(async () => {
+      const data = await chrome.storage.local.get("syncHistory");
+      return {
+        syncHistory: Array.isArray(data?.syncHistory) ? data.syncHistory : [],
+      };
+    }, sendResponse);
+    return true;
+  }
+  if (message.type === "SET_FAMILY_VARIANTS") {
+    replyAsync(() => handleSetFamilyVariants(message), sendResponse);
     return true;
   }
   if (message.type === "OPEN_ACTION_POPUP") {

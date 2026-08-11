@@ -23,6 +23,29 @@
     }
   },
   {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.163.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.163.com/subscribe_v3/index.html"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.163.com/wemedia/article/status/api/publishV2.do",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
     "id": 2,
     "priority": 1,
     "action": {

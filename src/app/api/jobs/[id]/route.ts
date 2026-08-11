@@ -9,6 +9,9 @@ export const maxDuration = 300;
 const ALLOWED_STATUS = new Set<JobStatus>([
   "pending",
   "running",
+  "draft_ok",
+  "filled_awaiting_publish",
+  "published",
   "success",
   "failed",
 ]);

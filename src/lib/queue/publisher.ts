@@ -4,14 +4,21 @@ import {
   getJob,
   listPendingJobs,
   updateJob,
+  upsertSession,
 } from "@/lib/db";
-import { articleToPublishContent } from "@/lib/content/adapt";
+import { publishContentForPlatform } from "@/lib/content/publish-resolve";
 import {
   contentToDraftArticle,
   getDraftAdapter,
 } from "@/lib/draft-adapters";
+import { jobStatusFromPublishResult } from "@/lib/job-status";
 import { closeBrowser, openContext, saveSession } from "@/lib/publishers/browser";
 import { getPublisher } from "@/lib/publishers";
+import {
+  cookiesHaveDouyinSession,
+  readDouyinCookies,
+} from "@/lib/publishers/douyin";
+import { sessionPath } from "@/lib/paths";
 import type { PlatformId, PublishEngine, PublishJob } from "@/lib/types";
 import { normalizePublishEngine } from "@/lib/types";
 import type { BrowserContext, Page } from "playwright";
@@ -89,19 +96,65 @@ export async function processQueue() {
   }
 }
 
+/** keepOpen 等待期间若已登录则写入会话（必须在关窗前调用） */
+async function persistContextSessionIfLoggedIn(
+  platform: PlatformId,
+  context: BrowserContext,
+  page: Page | undefined,
+): Promise<boolean> {
+  try {
+    const publisher = getPublisher(platform);
+    const livePage =
+      page && !page.isClosed()
+        ? page
+        : context.pages().find((p) => !p.isClosed());
+    if (!livePage) return false;
+
+    if (platform === "douyin") {
+      // 只认真实 session Cookie；登录壳未消失时也先落盘，避免关窗丢失
+      if (!cookiesHaveDouyinSession(await readDouyinCookies(livePage))) {
+        return false;
+      }
+    } else if (!(await publisher.isLoggedIn(livePage))) {
+      return false;
+    }
+
+    const storage = await saveSession(platform, context);
+    upsertSession(platform, {
+      storage_path: storage || sessionPath(platform),
+      status: "connected",
+      last_checked_at: new Date().toISOString(),
+      connected_at: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function waitForManualFinish(
   context: BrowserContext,
   page: Page,
-  timeoutMs = 5 * 60 * 1000,
+  options: { timeoutMs?: number; platform?: PlatformId } = {},
 ) {
+  const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
   const start = Date.now();
+  let saved = false;
   while (Date.now() - start < timeoutMs) {
     if (page.isClosed()) return;
     const pages = context.pages();
     if (pages.length === 0) return;
-    // User closed all tabs / windows for this context
     const anyOpen = pages.some((p) => !p.isClosed());
     if (!anyOpen) return;
+
+    // 抖音等：用户在窗口里扫码后立刻落盘，避免关窗后 Cookie 丢失
+    if (options.platform && !saved) {
+      saved = await persistContextSessionIfLoggedIn(
+        options.platform,
+        context,
+        page,
+      );
+    }
     await new Promise((r) => setTimeout(r, 1500));
   }
 }
@@ -123,7 +176,11 @@ async function runApiJob(job: PublishJob): Promise<void> {
     return;
   }
 
-  const content = articleToPublishContent(article);
+  const content = publishContentForPlatform(article.id, job.platform);
+  if (!content) {
+    updateJob(job.id, { status: "failed", error: "文章不存在" });
+    return;
+  }
   const auth = await adapter.checkAuth();
   if (!auth.isAuthenticated) {
     updateJob(job.id, {
@@ -138,7 +195,7 @@ async function runApiJob(job: PublishJob): Promise<void> {
   const result = await adapter.publishDraft(contentToDraftArticle(content));
   if (result.success) {
     updateJob(job.id, {
-      status: "success",
+      status: "draft_ok",
       result_url: result.postUrl ?? null,
       error: null,
     });
@@ -164,7 +221,11 @@ async function runJob(job: PublishJob): Promise<void> {
   }
 
   const publisher = getPublisher(job.platform);
-  const content = articleToPublishContent(article);
+  const content = publishContentForPlatform(article.id, job.platform);
+  if (!content) {
+    updateJob(job.id, { status: "failed", error: "文章不存在" });
+    return;
+  }
   let context: BrowserContext | undefined;
   let page: Page | undefined;
   let keepOpen = false;
@@ -222,6 +283,31 @@ async function runJob(job: PublishJob): Promise<void> {
       "https://www.eastmoney.com",
       "https://x.com",
       "https://twitter.com",
+      "https://om.qq.com",
+      "https://mp.ifeng.com",
+      "https://www.ifeng.com",
+      "https://kuaichuan.360kuai.com",
+      "https://www.360kuai.com",
+      "https://api.kuaichuan.360kuai.com",
+      "https://mp.sina.com.cn",
+      "https://www.sina.com.cn",
+      "https://mp.eastday.com",
+      "https://mp.tt.cn",
+      "https://www.eastday.com",
+      "https://mp.btime.com",
+      "https://www.btime.com",
+      "https://user.btime.com",
+      "https://pdcreator.pdnews.cn",
+      "https://pdnews.cn",
+      "https://xhh.app.xinhuanet.com",
+      "https://app.xinhuanet.com",
+      "https://mp.cyol.com",
+      "https://www.cyol.com",
+      "https://mp.youth.cn",
+      "https://cloud.tencent.com",
+      "https://developer.aliyun.com",
+      "https://bbs.huaweicloud.com",
+      "https://devdata.huaweicloud.com",
     ]) {
       await context
         .grantPermissions(["clipboard-read", "clipboard-write"], { origin })
@@ -232,15 +318,22 @@ async function runJob(job: PublishJob): Promise<void> {
     const result = await publisher.publish(page, content);
     keepOpen = Boolean(result.keepOpen);
 
-    if (result.success) {
+    const status = jobStatusFromPublishResult(result);
+    if (status !== "failed") {
       await saveSession(job.platform, context).catch(() => undefined);
       updateJob(job.id, {
-        status: "success",
+        status,
         result_url: result.url ?? page.url(),
-        error: null,
+        error:
+          status === "filled_awaiting_publish"
+            ? result.error ?? "已填入，请在打开的窗口确认后点发布"
+            : null,
         screenshot_path: result.screenshotPath ?? null,
       });
-      keepOpen = false;
+      // Fill-confirm platforms keep the window; true draft/publish success closes.
+      if (status !== "filled_awaiting_publish") {
+        keepOpen = false;
+      }
     } else {
       updateJob(job.id, {
         status: "failed",
@@ -256,7 +349,7 @@ async function runJob(job: PublishJob): Promise<void> {
     if (context) {
       if (keepOpen && page && !page.isClosed()) {
         // Block the queue until this platform window is done / closed
-        await waitForManualFinish(context, page);
+        await waitForManualFinish(context, page, { platform: job.platform });
       }
       await context.close().catch(() => undefined);
     }

@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://xhh.app.xinhuanet.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://xhh.app.xinhuanet.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "xhh.app.xinhuanet.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://xhh.app.xinhuanet.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://xhh.app.xinhuanet.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "xinhuanet.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

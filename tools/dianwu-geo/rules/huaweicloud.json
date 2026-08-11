@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://bbs.huaweicloud.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://bbs.huaweicloud.com/blogs/article"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "devdata.huaweicloud.com/rest/developer/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://bbs.huaweicloud.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://bbs.huaweicloud.com/blogs/article"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "bbs.huaweicloud.com/api/get-ainfo",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

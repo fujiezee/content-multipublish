@@ -1,14 +1,28 @@
 import { NextResponse } from "next/server";
-import { createArticle, linkGeoKeywordArticle, listArticles } from "@/lib/db";
+import {
+  createArticle,
+  linkGeoKeywordArticle,
+  listArticles,
+  upsertVariant,
+} from "@/lib/db";
+import {
+  defaultFamilyForKind,
+  isPlatformFamily,
+} from "@/lib/content/platform-families";
+import { requireAuth } from "@/lib/auth/session";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  return NextResponse.json({ articles: listArticles() });
+export async function GET(req: Request) {
+  const ctx = await requireAuth(req);
+  return NextResponse.json({
+    articles: listArticles(ctx?.workspaceId),
+  });
 }
 
 export async function POST(req: Request) {
+  const ctx = await requireAuth(req);
   const body = await req.json().catch(() => ({}));
   const now = new Date().toISOString();
   const article = {
@@ -17,6 +31,7 @@ export async function POST(req: Request) {
     body: typeof body.body === "string" ? body.body : "",
     summary: typeof body.summary === "string" ? body.summary : "",
     cover_path: typeof body.cover_path === "string" ? body.cover_path : null,
+    workspace_id: ctx?.workspaceId ?? null,
     created_at: now,
     updated_at: now,
   };
@@ -27,5 +42,18 @@ export async function POST(req: Request) {
     const brief = typeof body.geoBrief === "string" ? body.geoBrief : "";
     linkGeoKeywordArticle(geoKeywordId, article.id, brief);
   }
-  return NextResponse.json({ article }, { status: 201 });
+  const family = isPlatformFamily(body.family)
+    ? body.family
+    : defaultFamilyForKind("article");
+  if (article.body.trim()) {
+    upsertVariant({
+      articleId: article.id,
+      family,
+      title: article.title,
+      body: article.body,
+      summary: article.summary,
+      source: "generated",
+    });
+  }
+  return NextResponse.json({ article, family }, { status: 201 });
 }

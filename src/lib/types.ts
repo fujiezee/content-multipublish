@@ -26,11 +26,39 @@ export type PlatformId =
   | "netease"
   | "smzdm"
   | "eastmoney"
-  | "x";
+  | "x"
+  | "qiehao"
+  | "dafeng"
+  | "kuaichuan"
+  | "sinakandian"
+  | "dongfang"
+  | "btime"
+  | "peoplehao"
+  | "xinhuahao"
+  | "zhongqing"
+  | "tencentcloud"
+  | "aliyun"
+  | "huaweicloud";
 
 export type SessionStatus = "connected" | "disconnected" | "expired";
 
-export type JobStatus = "pending" | "running" | "success" | "failed";
+/**
+ * Job lifecycle:
+ * - pending / running: in flight
+ * - draft_ok: saved to platform draft box
+ * - filled_awaiting_publish: form filled (XHS etc.), user must click publish
+ * - published: live on platform
+ * - success: legacy alias for draft_ok (imported history)
+ * - failed: hard failure
+ */
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "draft_ok"
+  | "filled_awaiting_publish"
+  | "published"
+  | "success"
+  | "failed";
 
 /** extension = Chrome draft API; api = Node draft HTTP; playwright = local browser automation */
 export type PublishEngine = "extension" | "playwright" | "api";
@@ -46,6 +74,34 @@ export interface Article {
   body: string;
   summary: string;
   cover_path: string | null;
+  /** SaaS workspace ownership (nullable for legacy rows → default workspace). */
+  workspace_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Re-export platform family types for convenience. */
+export type {
+  PlatformFamily,
+  VariantSource,
+} from "@/lib/content/platform-families";
+export {
+  PLATFORM_FAMILIES,
+  ALL_PLATFORM_FAMILIES,
+  platformFamily,
+  isPlatformFamily,
+  defaultFamilyForKind,
+  familyLabel,
+} from "@/lib/content/platform-families";
+
+export interface ArticleVariant {
+  id: string;
+  article_id: string;
+  family: import("@/lib/content/platform-families").PlatformFamily;
+  title: string;
+  body: string;
+  summary: string;
+  source: import("@/lib/content/platform-families").VariantSource;
   created_at: string;
   updated_at: string;
 }
@@ -88,6 +144,15 @@ export interface PublishResult {
   screenshotPath?: string;
   /** Keep browser window open (e.g. for manual confirm). */
   keepOpen?: boolean;
+  /** Prefer over inferring from success/draftOnly. */
+  outcome?: Exclude<
+    JobStatus,
+    "pending" | "running" | "success"
+  >;
+  /** Platform draft saved (not live). */
+  draftOnly?: boolean;
+  /** Form filled; user must confirm publish (Xiaohongshu etc.). */
+  awaitingUserPublish?: boolean;
 }
 
 /** 语料库条目分类 */
@@ -134,7 +199,7 @@ export const COPYWRITING_KINDS: {
   { id: "brand_intro", label: "品牌介绍", hint: "官网 About、一句话介绍" },
   { id: "product", label: "产品文案", hint: "卖点、功能说明、落地页" },
   { id: "social", label: "社媒短帖", hint: "微博、小红书、朋友圈" },
-  { id: "article", label: "长文初稿", hint: "公众号、专栏文章大纲+正文" },
+  { id: "article", label: "长文初稿", hint: "公众号/专栏长文，约 3000–5000 字" },
   { id: "slogan", label: "标语口号", hint: "多条 Slogan 备选" },
 ];
 
@@ -279,8 +344,8 @@ export const PLATFORMS: {
   {
     id: "douban",
     name: "豆瓣",
-    description: "豆瓣日记",
-    limits: "标题建议 ≤ 100 字",
+    description: "豆瓣日记（新版话题；扩展草稿为仅自己可见）",
+    limits: "标题建议 ≤ 100 字；默认同步为仅自己可见",
   },
   {
     id: "sohu",
@@ -357,8 +422,8 @@ export const PLATFORMS: {
   {
     id: "xiaohongshu",
     name: "小红书",
-    description: "小红书长文/图文笔记",
-    limits: "标题 ≤ 20 字；常需封面图，失败时窗口留给人工确认",
+    description: "小红书长文/图文笔记（填稿待发，无稳定草稿 API）",
+    limits: "标题 ≤ 20 字；扩展/本机填好后需你确认发布",
   },
   {
     id: "douyin",
@@ -389,6 +454,78 @@ export const PLATFORMS: {
     name: "X",
     description: "X (Twitter) 长文/帖子",
     limits: "长文标题建议 ≤ 100 字；需已开通 Articles 或退回普通发帖",
+  },
+  {
+    id: "qiehao",
+    name: "企鹅号",
+    description: "腾讯内容开放平台企鹅号图文",
+    limits: "标题 5–64 字；默认同步为草稿",
+  },
+  {
+    id: "dafeng",
+    name: "大风号",
+    description: "凤凰网大风号图文（原凤凰号）",
+    limits: "标题建议 ≤ 64 字；默认同步为草稿",
+  },
+  {
+    id: "kuaichuan",
+    name: "360快传号",
+    description: "360 快传号图文",
+    limits: "标题建议 ≤ 64 字；默认同步为草稿",
+  },
+  {
+    id: "sinakandian",
+    name: "新浪看点",
+    description: "新浪看点/头条文章（与微博长文打通）",
+    limits: "标题建议 ≤ 64 字；若后台已并入微博，请改用微博平台",
+  },
+  {
+    id: "dongfang",
+    name: "东方号",
+    description: "东方头条东方号图文",
+    limits: "标题建议 ≤ 64 字；默认同步为草稿",
+  },
+  {
+    id: "btime",
+    name: "北京时间号",
+    description: "北京时间·时间号图文",
+    limits: "标题建议 ≤ 64 字；默认同步为草稿",
+  },
+  {
+    id: "peoplehao",
+    name: "人民号",
+    description: "人民日报人民号图文",
+    limits: "标题建议 ≤ 64 字；需 App 扫码登录与入驻审核；默认同步为草稿",
+  },
+  {
+    id: "xinhuahao",
+    name: "新华号",
+    description: "新华网客户端新华号图文",
+    limits: "标题建议 ≤ 64 字；多为邀约入驻；默认同步为草稿",
+  },
+  {
+    id: "zhongqing",
+    name: "中青号",
+    description: "中青看点中青号图文",
+    limits: "标题建议 ≤ 64 字；默认同步为草稿",
+  },
+  {
+    id: "tencentcloud",
+    name: "腾讯云+",
+    description: "腾讯云开发者社区文章",
+    limits: "标题 ≤ 80 字；正文纯文本建议 ≥ 140 字；同步为草稿",
+  },
+  {
+    id: "aliyun",
+    name: "阿里云开发者",
+    description: "阿里云开发者社区文章",
+    limits: "标题建议 ≤ 100 字；同步为 Markdown 草稿",
+  },
+  {
+    id: "huaweicloud",
+    name: "华为云社区",
+    description: "华为云社区博客",
+    limits: "标题 ≤ 64 字；同步为 Markdown 草稿（草稿箱最多 10 篇）",
   },
 ];
 

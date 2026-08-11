@@ -1,6 +1,21 @@
 /**
- * 搜狐焦点 — Wechatsync v1 focus.js 移植（publishNewsInfo status=4 草稿）
+ * 搜狐焦点 — 登录检测对齐现网 house/login.focus.cn
+ *
+ * 旧 mp.focus.cn / mp-fe-pc.focus.cn 媒体后台已 302 下线；
+ * 现网登录态看 Cookie `ppinf`（及 focusinf / pprdig），
+ * 用户信息走 login.focus.cn/passport/getUserInfo。
+ * 草稿接口若仍可用则走 publishNewsInfo status=4，否则给出明确失败原因。
  */
+import { getCookieValue } from "./_cookie.js";
+
+const DOMAINS = [".focus.cn", "focus.cn", "house.focus.cn", "login.focus.cn", "www.focus.cn"];
+const COOKIE_URLS = [
+  "https://house.focus.cn/",
+  "https://login.focus.cn/",
+  "https://www.focus.cn/",
+  "https://u.focus.cn/",
+];
+const SESSION_COOKIE_NAMES = ["ppinf", "focusinf", "pprdig"];
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -10,31 +25,96 @@ export function createSohufocusAdapter(BaseAdapter) {
     meta = {
       id: "sohufocus",
       name: "搜狐焦点",
-      icon: "https://mp.focus.cn/favicon.ico",
-      homepage: "https://mp.focus.cn/fe/index.html#/info/draft",
+      icon: "https://house.focus.cn/favicon.ico",
+      homepage: "https://login.focus.cn/?ru=https%3A%2F%2Fhouse.focus.cn%2F",
       capabilities: ["article", "draft", "image_upload"],
     };
 
+    async listFocusCookies() {
+      if (typeof chrome === "undefined" || !chrome.cookies?.getAll) return [];
+      try {
+        const all = await chrome.cookies.getAll({ domain: "focus.cn" });
+        return Array.isArray(all) ? all : [];
+      } catch {
+        try {
+          return (await chrome.cookies.getAll({})).filter((c) =>
+            String(c.domain || "").includes("focus.cn"),
+          );
+        } catch {
+          return [];
+        }
+      }
+    }
+
+    async getSessionCookie() {
+      for (const name of SESSION_COOKIE_NAMES) {
+        const byUrl = await getCookieValue(
+          this.runtime,
+          DOMAINS,
+          name,
+          COOKIE_URLS,
+        );
+        if (byUrl) return { name, value: byUrl };
+      }
+      const all = await this.listFocusCookies();
+      for (const name of SESSION_COOKIE_NAMES) {
+        const hit = all.find((c) => c.name === name && c.value);
+        if (hit?.value) return { name, value: String(hit.value) };
+      }
+      return null;
+    }
+
+    async fetchPassportUser() {
+      const response = await this.runtime.fetch(
+        "https://login.focus.cn/passport/getUserInfo",
+        {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            Origin: "https://house.focus.cn",
+            Referer: "https://house.focus.cn/",
+          },
+        },
+      );
+      const text = await response.text();
+      let res;
+      try {
+        res = JSON.parse(text);
+      } catch {
+        return null;
+      }
+      if (res?.code !== 200 || !res?.data) return null;
+      return res.data;
+    }
+
     async checkAuth() {
       try {
-        const response = await this.runtime.fetch(
-          "https://mp-fe-pc.focus.cn/user/status?",
-          {
-            credentials: "include",
-            headers: { Accept: "application/json" },
-          },
-        );
-        const res = await response.json();
-        const data = res?.data;
-        if (!data?.uid) {
-          return { isAuthenticated: false, error: "未登录" };
+        const session = await this.getSessionCookie();
+        const user = await this.fetchPassportUser().catch(() => null);
+
+        if (user?.uid != null || user?.nickName || user?.mobile) {
+          return {
+            isAuthenticated: true,
+            userId: String(user.uid || user.mobile || "focus"),
+            username:
+              user.nickName ||
+              user.mobile ||
+              (user.uid != null ? String(user.uid) : "搜狐焦点用户"),
+            avatar: user.avatar || user.headPic || undefined,
+          };
         }
-        return {
-          isAuthenticated: true,
-          userId: String(data.uid),
-          username: data.accountName || String(data.uid),
-          avatar: data.avatar || undefined,
-        };
+
+        // Passport API 偶发失败时，有登录 Cookie 仍视为已登录（对齐豆瓣策略）
+        if (session?.value) {
+          return {
+            isAuthenticated: true,
+            userId: "focus-session",
+            username: "搜狐焦点用户",
+          };
+        }
+
+        return { isAuthenticated: false, error: "未登录" };
       } catch (error) {
         return {
           isAuthenticated: false,
@@ -58,7 +138,12 @@ export function createSohufocusAdapter(BaseAdapter) {
           body: formData,
         },
       );
-      const res = await response.json();
+      if (response.status === 301 || response.status === 302) {
+        throw new Error(
+          "搜狐焦点旧媒体后台已下线，无法上传图片；请改用搜狐号或本机自动",
+        );
+      }
+      const res = await response.json().catch(() => null);
       if (res?.code != 200 || res?.data == null) {
         throw new Error(res?.msg || res?.message || "搜狐焦点图片上传失败");
       }
@@ -77,8 +162,33 @@ export function createSohufocusAdapter(BaseAdapter) {
 
         const title = String(article.title || "").slice(0, 64);
         let content = article.html || article.markdown || "";
-        // collapse whitespace between tags (Wechatsync preEditPost)
         content = content.replace(/>[\t\s]*</g, "><");
+
+        // 先探测旧草稿 API 是否仍可用（多数环境已 302 到 www.focus.cn）
+        const probe = await this.runtime.fetch(
+          "https://mp-fe-pc.focus.cn/user/status?",
+          {
+            method: "GET",
+            credentials: "include",
+            headers: { Accept: "application/json" },
+            redirect: "manual",
+          },
+        ).catch(() => null);
+
+        const probeStatus = probe?.status ?? 0;
+        const probeType = String(probe?.headers?.get?.("content-type") || "");
+        if (
+          !probe ||
+          probeStatus === 0 ||
+          probeStatus === 301 ||
+          probeStatus === 302 ||
+          probeType.includes("text/html")
+        ) {
+          throw new Error(
+            "搜狐焦点媒体后台（mp.focus.cn）已下线，扩展草稿不可用。请改用「搜狐号」草稿，或本机自动打开发布页",
+          );
+        }
+
         content = await this.processImages(
           content,
           (src) => this.uploadImageByUrl(src),
@@ -134,7 +244,7 @@ export function createSohufocusAdapter(BaseAdapter) {
 
         return this.createResult(true, {
           postId: String(articleId),
-          postUrl: `https://mp.focus.cn/fe/index.html#/info/subinfo/${articleId}`,
+          postUrl: `https://house.focus.cn/`,
           draftOnly: options?.draftOnly ?? true,
         });
       } catch (error) {

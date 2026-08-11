@@ -13,12 +13,58 @@
         {
           "header": "Referer",
           "operation": "set",
+          "value": "https://www.douban.com/topic/create?subtype=note"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "m.douban.com/rexxar/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.douban.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
           "value": "https://www.douban.com"
         }
       ]
     },
     "condition": {
       "urlFilter": "www.douban.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.douban.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://www.douban.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "m.douban.com/",
       "resourceTypes": ["xmlhttprequest"]
     }
   }

@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.cyol.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.cyol.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.cyol.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.youth.cn"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.youth.cn/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.youth.cn/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

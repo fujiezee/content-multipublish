@@ -2,7 +2,7 @@
   "name": "content-multipublish",
   "version": "0.1.0",
   "private": true,
-  "description": "Local multi-platform article publisher (Playwright + Next.js)",
+  "description": "点物GEO：本机 GEO 写稿（语料/挖词/AI 文案）+ Chrome 扩展多平台草稿同步",
   "engines": {
     "node": ">=20"
   },

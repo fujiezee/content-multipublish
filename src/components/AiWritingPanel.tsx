@@ -8,11 +8,15 @@ import type {
   CopywritingStyle,
   CorpusCategory,
   CorpusItem,
+  PlatformFamily,
 } from "@/lib/types";
 import {
   COPYWRITING_KINDS,
   COPYWRITING_STYLES,
   CORPUS_CATEGORIES,
+  PLATFORM_FAMILIES,
+  defaultFamilyForKind,
+  isPlatformFamily,
 } from "@/lib/types";
 import { stripBodyLabel } from "@/lib/ai/strip-body-label";
 
@@ -35,6 +39,7 @@ export function AiWritingPanel() {
   const [corpus, setCorpus] = useState<CorpusItem[]>([]);
   const [kind, setKind] = useState<CopywritingKind>("brand_intro");
   const [style, setStyle] = useState<CopywritingStyle>("default");
+  const [family, setFamily] = useState<PlatformFamily>("tech");
   const [brief, setBrief] = useState("");
   const [tone, setTone] = useState("专业、真诚、有温度");
   const [categories, setCategories] = useState<CorpusCategory[]>([
@@ -65,12 +70,14 @@ export function AiWritingPanel() {
     const briefParam = searchParams.get("brief");
     const title = searchParams.get("title");
     const kindParam = searchParams.get("kind");
+    const familyParam = searchParams.get("family");
     const keywordId = searchParams.get("geoKeywordId");
     setGeoKeywordId(keywordId?.trim() || null);
     if (briefParam) setBrief(briefParam);
     else if (title) {
       setBrief(`请以标题「${title}」为主题写一篇长文，自然覆盖相关长尾搜索意图。`);
     }
+    let nextKind: CopywritingKind | null = null;
     if (
       kindParam === "article" ||
       kindParam === "brand_intro" ||
@@ -78,7 +85,13 @@ export function AiWritingPanel() {
       kindParam === "social" ||
       kindParam === "slogan"
     ) {
+      nextKind = kindParam;
       setKind(kindParam);
+    }
+    if (isPlatformFamily(familyParam)) {
+      setFamily(familyParam);
+    } else if (nextKind) {
+      setFamily(defaultFamilyForKind(nextKind));
     }
   }, [searchParams]);
 
@@ -132,6 +145,7 @@ export function AiWritingPanel() {
         body: JSON.stringify({
           kind,
           style,
+          family,
           brief,
           tone: style === "default" ? tone : tone.trim() || undefined,
           categories,
@@ -239,6 +253,7 @@ export function AiWritingPanel() {
           title: preview.title,
           body: preview.bodyHtml,
           summary: preview.summary,
+          family,
           geoKeywordId: geoKeywordId || undefined,
           geoBrief: brief,
         }),
@@ -298,11 +313,30 @@ export function AiWritingPanel() {
                 type="button"
                 title={k.hint}
                 className={`btn text-sm ${kind === k.id ? "btn-primary" : "btn-ghost"}`}
-                onClick={() => setKind(k.id)}
+                onClick={() => {
+                  setKind(k.id);
+                  setFamily(defaultFamilyForKind(k.id));
+                }}
               >
                 {k.label}
               </button>
             ))}
+          </div>
+          <div>
+            <div className="mb-2 text-sm text-[var(--muted)]">目标平台族</div>
+            <div className="flex flex-wrap gap-2">
+              {PLATFORM_FAMILIES.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  title={f.hint}
+                  className={`btn text-sm ${family === f.id ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setFamily(f.id)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <div className="mb-2 text-sm text-[var(--muted)]">写作风格</div>

@@ -1,9 +1,14 @@
-import { createArticle, linkGeoKeywordArticle } from "@/lib/db";
+import { createArticle, linkGeoKeywordArticle, upsertVariant } from "@/lib/db";
 import { streamBrandCopy } from "@/lib/ai/copywriting";
+import {
+  defaultFamilyForKind,
+  isPlatformFamily,
+} from "@/lib/content/platform-families";
 import type {
   CopywritingKind,
   CopywritingStyle,
   CorpusCategory,
+  PlatformFamily,
 } from "@/lib/types";
 import { randomUUID } from "crypto";
 
@@ -33,7 +38,8 @@ const VALID_CATEGORIES = new Set<CorpusCategory>([
 ]);
 
 function parseBody(body: unknown) {
-  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const record =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const brief = typeof record.brief === "string" ? record.brief.trim() : "";
   const kind = VALID_KINDS.has(record.kind as CopywritingKind)
     ? (record.kind as CopywritingKind)
@@ -54,6 +60,9 @@ function parseBody(body: unknown) {
     : undefined;
   const geoKeywordId =
     typeof record.geoKeywordId === "string" ? record.geoKeywordId.trim() : "";
+  const family: PlatformFamily = isPlatformFamily(record.family)
+    ? record.family
+    : defaultFamilyForKind(kind);
   return {
     brief,
     kind,
@@ -64,6 +73,7 @@ function parseBody(body: unknown) {
     categories,
     corpusIds,
     geoKeywordId,
+    family,
   };
 }
 
@@ -71,6 +81,7 @@ function saveGeneratedArticle(
   result: { title: string; bodyHtml: string; summary: string },
   geoKeywordId: string,
   brief: string,
+  family: PlatformFamily,
 ) {
   const now = new Date().toISOString();
   const article = {
@@ -83,6 +94,14 @@ function saveGeneratedArticle(
     updated_at: now,
   };
   createArticle(article);
+  upsertVariant({
+    articleId: article.id,
+    family,
+    title: result.title,
+    body: result.bodyHtml,
+    summary: result.summary,
+    source: "generated",
+  });
   if (geoKeywordId) {
     linkGeoKeywordArticle(geoKeywordId, article.id, brief);
   }
@@ -101,6 +120,7 @@ export async function POST(req: Request) {
     categories,
     corpusIds,
     geoKeywordId,
+    family,
   } = parseBody(body);
 
   if (!brief) {
@@ -117,12 +137,18 @@ export async function POST(req: Request) {
         tone,
         categories,
         corpusIds,
+        family,
       });
       if (saveAsArticle) {
-        const article = saveGeneratedArticle(result, geoKeywordId, brief);
-        return Response.json({ ...result, article });
+        const article = saveGeneratedArticle(
+          result,
+          geoKeywordId,
+          brief,
+          family,
+        );
+        return Response.json({ ...result, article, family });
       }
-      return Response.json(result);
+      return Response.json({ ...result, family });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return Response.json({ error: message }, { status: 500 });
@@ -141,12 +167,17 @@ export async function POST(req: Request) {
 
       try {
         for await (const event of streamBrandCopy(
-          { kind, brief, style, tone, categories, corpusIds },
+          { kind, brief, style, tone, categories, corpusIds, family },
           { signal: abort.signal },
         )) {
           if (event.type === "done" && saveAsArticle) {
-            const article = saveGeneratedArticle(event.result, geoKeywordId, brief);
-            send({ type: "done", result: event.result, article });
+            const article = saveGeneratedArticle(
+              event.result,
+              geoKeywordId,
+              brief,
+              family,
+            );
+            send({ type: "done", result: event.result, article, family });
             continue;
           }
           send(event);

@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { UPLOADS_DIR, ensureDataDirs } from "@/lib/paths";
+import { uploadPublicMedia } from "@/lib/storage/public-media";
 
 export const runtime = "nodejs";
 
@@ -20,8 +21,16 @@ export async function POST(req: Request) {
   const buf = Buffer.from(await file.arrayBuffer());
   fs.writeFileSync(dest, buf);
 
+  const publicUrl = await uploadPublicMedia({
+    bytes: buf,
+    filename: name,
+    contentType: file.type || undefined,
+  });
+
   return NextResponse.json({
     path: `data/uploads/${name}`,
-    url: `/api/uploads/${name}`,
+    // Prefer public CDN so platform draft fetchers (Zhihu etc.) can pull images.
+    url: publicUrl || `/api/uploads/${name}`,
+    localUrl: `/api/uploads/${name}`,
   });
 }

@@ -153,6 +153,66 @@ export const PLATFORM_ICONS: Record<PlatformId, PlatformIconMeta> = {
     color: "#000000",
     mark: "X",
   },
+  qiehao: {
+    icon: "https://om.gtimg.cn/om/om_2.0/images/favicon_om.ico",
+    color: "#12b7f5",
+    mark: "企",
+  },
+  dafeng: {
+    icon: "https://www.ifeng.com/favicon.ico",
+    color: "#e60012",
+    mark: "风",
+  },
+  kuaichuan: {
+    icon: "https://kuaichuan.360kuai.com/favicon.ico",
+    color: "#00b365",
+    mark: "快",
+  },
+  sinakandian: {
+    icon: "https://www.sina.com.cn/favicon.ico",
+    color: "#ff8200",
+    mark: "浪",
+  },
+  dongfang: {
+    icon: "https://www.eastday.com/favicon.ico",
+    color: "#e60012",
+    mark: "东",
+  },
+  btime: {
+    icon: "https://www.btime.com/favicon.ico",
+    color: "#1a5cff",
+    mark: "时",
+  },
+  peoplehao: {
+    icon: "https://www.people.com.cn/favicon.ico",
+    color: "#c40000",
+    mark: "人",
+  },
+  xinhuahao: {
+    icon: "https://www.xinhuanet.com/favicon.ico",
+    color: "#c41230",
+    mark: "华",
+  },
+  zhongqing: {
+    icon: "https://www.cyol.com/favicon.ico",
+    color: "#0b5cad",
+    mark: "青",
+  },
+  tencentcloud: {
+    icon: "https://cloud.tencent.com/favicon.ico",
+    color: "#0052d9",
+    mark: "腾",
+  },
+  aliyun: {
+    icon: "https://developer.aliyun.com/favicon.ico",
+    color: "#ff6a00",
+    mark: "阿",
+  },
+  huaweicloud: {
+    icon: "https://bbs.huaweicloud.com/favicon.ico",
+    color: "#cf0a2c",
+    mark: "华",
+  },
 };
 
 export function platformFaviconUrl(id: PlatformId) {

@@ -4,7 +4,8 @@ export const neteasePublisher = createSimplePublisher({
   id: "netease",
   name: "网易号",
   loginUrl: "https://mp.163.com/login.html",
-  editorUrl: "https://mp.163.com/#/article/publish",
+  editorUrl:
+    "https://mp.163.com/subscribe_v3/index.html#/article-publish",
   cookieOrigins: [
     "https://mp.163.com",
     "https://www.163.com",

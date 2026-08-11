@@ -8,6 +8,29 @@
         {
           "header": "Origin",
           "operation": "set",
+          "value": "https://house.focus.cn"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://house.focus.cn/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "login.focus.cn/passport/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
           "value": "https://mp.focus.cn"
         },
         {

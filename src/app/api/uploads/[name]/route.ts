@@ -25,7 +25,9 @@ export async function GET(_req: Request, ctx: Ctx) {
         ? "image/jpeg"
         : ext === ".webp"
           ? "image/webp"
-          : "application/octet-stream";
+          : ext === ".svg"
+            ? "image/svg+xml"
+            : "application/octet-stream";
   return new NextResponse(buf, {
     headers: { "Content-Type": type, "Cache-Control": "public, max-age=31536000" },
   });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { enqueuePublish } from "@/lib/queue/publisher";
 import type { PlatformId } from "@/lib/types";
 import { normalizePublishEngine } from "@/lib/types";
-import { articleToPublishContent, validateForPlatform } from "@/lib/content/adapt";
+import { validateArticleForPlatforms } from "@/lib/content/publish-resolve";
 import { getArticle } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -23,12 +23,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "文章不存在" }, { status: 404 });
   }
 
-  const content = articleToPublishContent(article);
-  const warnings: Record<string, string[]> = {};
-  for (const p of platforms) {
-    const w = validateForPlatform(p, content);
-    if (w.length) warnings[p] = w;
-  }
+  const warnings = validateArticleForPlatforms(articleId, platforms);
 
   try {
     const jobs = enqueuePublish(articleId, platforms, { engine });

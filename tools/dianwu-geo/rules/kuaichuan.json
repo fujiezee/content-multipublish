@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://kuaichuan.360kuai.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://kuaichuan.360kuai.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "kuaichuan.360kuai.com/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://kuaichuan.360kuai.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://kuaichuan.360kuai.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "api.kuaichuan.360kuai.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

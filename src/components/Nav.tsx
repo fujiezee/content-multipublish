@@ -10,13 +10,14 @@ const links = [
   { href: "/writing", label: "AI 写文案" },
   { href: "/accounts", label: "本机账号" },
   { href: "/jobs", label: "同步记录" },
+  { href: "/settings", label: "工作区" },
 ];
 
 export function Nav() {
   const pathname = usePathname();
 
   return (
-    <header className="border-b border-[var(--line)]/80 bg-[color-mix(in_srgb,var(--card)_70%,transparent)] backdrop-blur-md">
+    <header className="sticky top-0 z-50 border-b border-[var(--line)]/80 bg-[color-mix(in_srgb,var(--card)_88%,transparent)] backdrop-blur-md">
       <div className="shell flex items-center justify-between py-4">
         <Link href="/" className="group">
           <div className="text-[1.35rem] font-semibold tracking-tight text-[var(--accent)]">

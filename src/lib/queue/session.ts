@@ -5,9 +5,29 @@ import {
   waitForManualLogin,
 } from "@/lib/publishers/browser";
 import { getPublisher } from "@/lib/publishers";
+import {
+  cookiesHaveDouyinSession,
+  douyinHomeUrl,
+  readDouyinCookies,
+} from "@/lib/publishers/douyin";
 import { upsertSession } from "@/lib/db";
 import { sessionPath } from "@/lib/paths";
 import type { PlatformId } from "@/lib/types";
+
+function removeInvalidDouyinSessionFile() {
+  const file = sessionPath("douyin");
+  if (!fs.existsSync(file)) return;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      cookies?: { name: string; value?: string }[];
+    };
+    if (!cookiesHaveDouyinSession(raw.cookies ?? [])) {
+      fs.unlinkSync(file);
+    }
+  } catch {
+    fs.unlinkSync(file);
+  }
+}
 
 const connecting = new Set<PlatformId>();
 
@@ -107,10 +127,27 @@ export async function connectPlatform(platform: PlatformId) {
         if (!hasUi) return false;
       }
 
-      // 抖音创作者：未登录也会有 passport_csrf_token / odin_tt，且首页 URL 含 creator
-      // 必须等到真正的 sessionid，且登录二维码消失，再进图文发布页确认
+      // 抖音创作者：未登录也会有 passport_csrf_token / odin_tt / ttwid
+      // 必须等到真正的 sessionid，且登录二维码消失；先回创作者首页再进图文页
       if (platform === "douyin") {
-        if (!(await publisher.isLoggedIn(p))) return false;
+        const cookies = await readDouyinCookies(p);
+        if (!cookiesHaveDouyinSession(cookies)) return false;
+        // 2FA / 短信验证码阶段：cookie 可能尚未齐，继续等
+        if (
+          (await p.getByText(/验证码|安全验证|请输入验证码/).count()) > 0 &&
+          !(await publisher.isLoggedIn(p))
+        ) {
+          return false;
+        }
+        if (!/creator-micro/i.test(p.url())) {
+          await p
+            .goto(douyinHomeUrl, {
+              waitUntil: "domcontentloaded",
+              timeout: 45_000,
+            })
+            .catch(() => undefined);
+          await p.waitForTimeout(2000);
+        }
         if (
           !/creator-micro\/content\/post\/image|content\/post\/image/i.test(
             p.url(),
@@ -126,7 +163,8 @@ export async function connectPlatform(platform: PlatformId) {
         }
         if (!(await publisher.isLoggedIn(p))) return false;
         if (/passport|sso\.|\/login\b/i.test(p.url())) return false;
-        return true;
+        // 再确认一次 cookie，避免登录壳页误判
+        return cookiesHaveDouyinSession(await readDouyinCookies(p));
       }
 
       // 掘金 / 微信等：连接后打开编辑页确认未掉登录
@@ -187,47 +225,46 @@ export async function connectPlatform(platform: PlatformId) {
           return true;
         }
 
-        // 大鱼号：首页/游客也有 cna 等 cookie，必须进写稿页且无扫码门
-        if (platform === "dayu") {
-          if (
-            (await p
-              .getByText(/扫码登录|请使用UC浏览器扫码|正在生成二维码/)
-              .count()) > 0
-          ) {
-            return false;
-          }
-          if (!/#\/article\/write|article\/write/i.test(p.url())) {
-            await p
-              .goto(publisher.editorUrl, {
-                waitUntil: "domcontentloaded",
-                timeout: 45_000,
-              })
-              .catch(() => undefined);
-            await p.waitForTimeout(2500);
-          }
-          if (
-            (await p
-              .getByText(/扫码登录|请使用UC浏览器扫码|正在生成二维码/)
-              .count()) > 0
-          ) {
-            return false;
-          }
-          const title = p.locator(
-            'textarea[placeholder*="标题"], input[placeholder*="标题"], input[placeholder*="请输入标题"]',
-          );
-          const hasEditor =
-            (await title.count()) > 0 &&
-            (await title.first().isVisible().catch(() => false));
-          if (!hasEditor) return false;
-          if (!(await publisher.isLoggedIn(p))) return false;
-          return true;
+        if (/\/login|signin|passport|loginpage|i\/flow\/login/i.test(p.url())) {
+          return false;
         }
+      }
+
+      // 大鱼号：首页/游客也有 cna 等 cookie，必须进写稿页且无扫码门
+      if (platform === "dayu") {
+        const url = p.url();
         if (
-          /\/login|signin|passport|loginpage|i\/flow\/login/i.test(p.url()) &&
-          platform !== "weixin"
+          (await p
+            .getByText(/扫码登录|请使用UC浏览器扫码|正在生成二维码/)
+            .count()) > 0
         ) {
           return false;
         }
+        if (!/#\/article\/write|article\/write/i.test(url)) {
+          await p
+            .goto(publisher.editorUrl, {
+              waitUntil: "domcontentloaded",
+              timeout: 45_000,
+            })
+            .catch(() => undefined);
+          await p.waitForTimeout(2500);
+        }
+        if (
+          (await p
+            .getByText(/扫码登录|请使用UC浏览器扫码|正在生成二维码/)
+            .count()) > 0
+        ) {
+          return false;
+        }
+        const title = p.locator(
+          'textarea[placeholder*="标题"], input[placeholder*="标题"], input[placeholder*="请输入标题"]',
+        );
+        const hasEditor =
+          (await title.count()) > 0 &&
+          (await title.first().isVisible().catch(() => false));
+        if (!hasEditor) return false;
+        if (!(await publisher.isLoggedIn(p))) return false;
+        return true;
       }
 
       return true;
@@ -260,6 +297,17 @@ export async function connectPlatform(platform: PlatformId) {
       throw new Error("登录态未生效（可能未完成验证）。请重试连接并完成扫码/验证码");
     }
 
+    // Douyin: validate cookies in memory BEFORE writing storageState,
+    // so a failed reconnect cannot wipe a previously good session file.
+    if (platform === "douyin") {
+      const live = await readDouyinCookies(page);
+      if (!cookiesHaveDouyinSession(live)) {
+        throw new Error(
+          "未拿到抖音登录 Cookie（sessionid）。请扫码完成登录（含验证码）后再等几秒，不要只停留在登录二维码页",
+        );
+      }
+    }
+
     const storage = await saveSession(platform, context);
 
     // Sanity: session file must exist and contain cookies
@@ -268,7 +316,7 @@ export async function connectPlatform(platform: PlatformId) {
     }
     try {
       const raw = JSON.parse(fs.readFileSync(storage, "utf8")) as {
-        cookies?: { name: string }[];
+        cookies?: { name: string; value?: string }[];
       };
       if (!raw.cookies?.length) {
         throw new Error("会话里没有 Cookie，登录可能未完成");
@@ -306,15 +354,10 @@ export async function connectPlatform(platform: PlatformId) {
         }
       }
       if (platform === "douyin") {
-        const names = new Set(raw.cookies.map((c) => c.name));
-        if (
-          !names.has("sessionid") &&
-          !names.has("sessionid_ss") &&
-          !names.has("sid_guard") &&
-          !names.has("sid_tt")
-        ) {
+        if (!cookiesHaveDouyinSession(raw.cookies ?? [])) {
+          removeInvalidDouyinSessionFile();
           throw new Error(
-            "未拿到抖音登录 Cookie（sessionid）。请扫码完成登录后再等几秒，不要只停留在登录二维码页",
+            "未拿到抖音登录 Cookie（sessionid）。请扫码完成登录（含验证码）后再等几秒，不要只停留在登录二维码页",
           );
         }
       }
@@ -329,15 +372,28 @@ export async function connectPlatform(platform: PlatformId) {
     let displayName: string | null = null;
     try {
       displayName = await page.evaluate(() => {
-        const el =
-          document.querySelector('[class*="name"]') ||
-          document.querySelector(".AppHeader-userInfo") ||
-          document.querySelector(".username") ||
-          document.querySelector('a[href*="/u/"]');
-        return el?.textContent?.trim()?.slice(0, 40) || null;
+        const reject =
+          /创作者中心|我是创作者|扫码登录|发布图文|登录|MCN|机构/;
+        const candidates = [
+          document.querySelector('[class*="user-name"]'),
+          document.querySelector('[class*="userName"]'),
+          document.querySelector('[class*="nickname"]'),
+          document.querySelector(".AppHeader-userInfo"),
+          document.querySelector(".username"),
+          document.querySelector('a[href*="/u/"]'),
+          document.querySelector('[class*="name"]'),
+        ];
+        for (const el of candidates) {
+          const text = el?.textContent?.trim()?.slice(0, 40) || "";
+          if (text && !reject.test(text)) return text;
+        }
+        return null;
       });
     } catch {
       displayName = null;
+    }
+    if (platform === "douyin" && (!displayName || /创作者/.test(displayName))) {
+      displayName = "抖音创作者";
     }
 
     upsertSession(platform, {
@@ -354,7 +410,9 @@ export async function connectPlatform(platform: PlatformId) {
     if (context) await context.close().catch(() => undefined);
     // Clean partial session on failure
     const file = sessionPath(platform);
-    if (
+    if (platform === "douyin") {
+      removeInvalidDouyinSessionFile();
+    } else if (
       fs.existsSync(file) &&
       (platform === "jianshu" || platform === "csdn" || platform === "toutiao")
     ) {
@@ -427,6 +485,12 @@ export async function checkPlatformSession(platform: PlatformId) {
         loggedIn &&
         /[?&]token=\d+/i.test(page.url()) &&
         (await page.getByText("微信扫一扫").count()) === 0;
+    }
+    if (platform === "douyin") {
+      loggedIn =
+        loggedIn &&
+        cookiesHaveDouyinSession(await readDouyinCookies(page));
+      if (!loggedIn) removeInvalidDouyinSessionFile();
     }
     const status = loggedIn ? ("connected" as const) : ("expired" as const);
     upsertSession(platform, {

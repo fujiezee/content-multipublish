@@ -118,6 +118,7 @@ export function GeoKeywordPanel() {
   function goWriteWithAi(keyword: GeoKeyword) {
     const params = new URLSearchParams({
       kind: "article",
+      family: "tech",
       geoKeywordId: keyword.id,
       brief: `围绕长尾词「${keyword.keyword}」写一篇 GEO 优化长文。${keyword.angle ? `写作角度：${keyword.angle}` : ""}`,
       title: keyword.title,

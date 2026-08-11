@@ -3,14 +3,16 @@ import { createSimplePublisher } from "@/lib/publishers/helpers";
 export const sohufocusPublisher = createSimplePublisher({
   id: "sohufocus",
   name: "搜狐焦点",
-  loginUrl: "https://house.focus.cn/",
-  editorUrl: "https://mp.focus.cn/",
+  loginUrl: "https://login.focus.cn/?ru=https%3A%2F%2Fhouse.focus.cn%2F",
+  editorUrl: "https://house.focus.cn/",
   cookieOrigins: [
     "https://house.focus.cn",
-    "https://mp.focus.cn",
+    "https://login.focus.cn",
+    "https://www.focus.cn",
     "https://focus.cn",
   ],
-  cookieNamePattern: /session|token|focus|sohu/i,
+  // 现网登录 Cookie：ppinf / focusinf / pprdig（勿只认 session）
+  cookieNamePattern: /ppinf|focusinf|pprdig|session|token|focus|sohu/i,
   loginUrlPattern: /login|passport/i,
   titleSelectors: [
     'input[placeholder*="标题"]',

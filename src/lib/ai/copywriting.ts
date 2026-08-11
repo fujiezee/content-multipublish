@@ -7,8 +7,15 @@ import type {
   CopywritingStyle,
   CorpusCategory,
   CorpusItem,
+  PlatformFamily,
 } from "@/lib/types";
 import { COPYWRITING_KINDS, COPYWRITING_STYLES, CORPUS_CATEGORIES } from "@/lib/types";
+import {
+  FAMILY_INSTRUCTIONS,
+  defaultFamilyForKind,
+  familyLabel,
+  isPlatformFamily,
+} from "@/lib/content/platform-families";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -19,6 +26,8 @@ export type GenerateCopyInput = {
   corpusIds?: string[];
   tone?: string;
   style?: CopywritingStyle;
+  /** Target platform family for tone / length. */
+  family?: PlatformFamily;
 };
 
 export type GeneratedCopy = {
@@ -46,9 +55,19 @@ const KIND_INSTRUCTIONS: Record<CopywritingKind, string> = {
   social:
     "写适合微博、小红书、朋友圈的短文案。口语化、有记忆点，控制在 300 字以内，可加适量 emoji。",
   article:
-    "写一篇结构完整的长文初稿：标题吸引人，有引言、2-4 个小标题正文、简短结语。总字数 800-1500 字。",
+    "写一篇结构完整、可直接投放的长文初稿：标题吸引人；开篇引言点题并给出读者收益；正文用 5-8 个小标题展开（现象/误区、原理、方法步骤、案例或场景、常见问题、注意事项等按需取舍），每节写透、有具体例子与可执行要点；结尾总结并给轻量行动号召。总字数必须落在 3000-5000 字（按中文字符计，不含标题），宁写满勿缩水；禁止写成提纲式短文。",
   slogan: "生成 5-8 条品牌 Slogan 或广告语备选，每条单独一行，附一句简短说明。",
 };
+
+function maxTokensForKind(
+  kind: CopywritingKind,
+  family?: PlatformFamily,
+): number {
+  if (family === "social" || kind === "social" || kind === "slogan") return 2048;
+  if (kind === "article" || family === "tech" || family === "cloud") return 8192;
+  if (family) return 8192;
+  return 4096;
+}
 
 const STYLE_INSTRUCTIONS: Record<CopywritingStyle, string> = {
   default:
@@ -114,7 +133,12 @@ function scoreCorpusItem(item: CorpusItem, brief: string, categories: CorpusCate
 
 export function selectCorpusForBrief(
   brief: string,
-  options: { categories?: CorpusCategory[]; corpusIds?: string[] },
+  options: {
+    categories?: CorpusCategory[];
+    corpusIds?: string[];
+    /** Extra keywords to boost ranking (e.g. platform-family terms). */
+    boostTerms?: string[];
+  },
   limit = 8,
 ): CorpusItem[] {
   const all = listCorpusItems();
@@ -128,15 +152,26 @@ export function selectCorpusForBrief(
   }
 
   const categories = options.categories ?? [];
+  const boost = (options.boostTerms ?? []).filter((t) => t.trim().length >= 2);
+  const scoredBrief =
+    boost.length > 0 ? `${brief}\n${boost.join(" ")}` : brief;
+
   return [...all]
-    .map((item) => ({ item, score: scoreCorpusItem(item, brief, categories) }))
+    .map((item) => {
+      let score = scoreCorpusItem(item, scoredBrief, categories);
+      const hay = `${item.title} ${item.tags} ${item.content}`.toLowerCase();
+      for (const term of boost) {
+        if (hay.includes(term.toLowerCase())) score += 2;
+      }
+      return { item, score };
+    })
     .filter((row) => row.score > 0 || categories.length === 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((row) => row.item);
 }
 
-function buildCorpusContext(items: CorpusItem[]) {
+export function buildCorpusContext(items: CorpusItem[]) {
   if (items.length === 0) {
     return "（语料库暂无相关内容，请基于用户需求合理发挥，但不要编造具体数据或客户名称。）";
   }
@@ -175,8 +210,17 @@ ${toneLine}
 第二行：摘要: （50字以内摘要）
 空一行后直接输出 Markdown 正文，不要写「正文:」「正文：」等标签。`;
 
+  const family = isPlatformFamily(input.family)
+    ? input.family
+    : defaultFamilyForKind(input.kind);
+  const familyBlock = `目标平台族：${familyLabel(family)}（${family}）
+平台调性（必须遵守）：
+${FAMILY_INSTRUCTIONS[family]}`;
+
   const user = `文案类型：${kindLabel(input.kind)}
 写作要求：${KIND_INSTRUCTIONS[input.kind]}
+
+${familyBlock}
 
 用户需求：
 ${brief}
@@ -190,6 +234,7 @@ ${buildCorpusContext(corpus)}`;
       { role: "user" as const, content: user },
     ],
     corpus,
+    family,
   };
 }
 
@@ -271,7 +316,7 @@ export async function* streamBrandCopy(
   input: GenerateCopyInput,
   options?: { signal?: AbortSignal },
 ): AsyncGenerator<CopyStreamEvent> {
-  const { messages, corpus } = buildCopywritingMessages(input);
+  const { messages, corpus, family } = buildCopywritingMessages(input);
   const usedCorpus = corpus.map((c) => ({ id: c.id, title: c.title }));
 
   yield {
@@ -286,7 +331,7 @@ export async function* streamBrandCopy(
   try {
     for await (const chunk of streamChatCompletion(messages, {
       temperature: 0.75,
-      maxTokens: 4096,
+      maxTokens: maxTokensForKind(input.kind, family),
       signal: options?.signal,
     })) {
       if (chunk.type === "thinking") {
@@ -309,7 +354,10 @@ export async function* streamBrandCopy(
 export async function generateBrandCopy(
   input: GenerateCopyInput,
 ): Promise<GeneratedCopy> {
-  const { messages, corpus } = buildCopywritingMessages(input);
-  const raw = await chatCompletion(messages, { temperature: 0.75, maxTokens: 4096 });
+  const { messages, corpus, family } = buildCopywritingMessages(input);
+  const raw = await chatCompletion(messages, {
+    temperature: 0.75,
+    maxTokens: maxTokensForKind(input.kind, family),
+  });
   return finalizeGeneratedCopy(raw, corpus);
 }

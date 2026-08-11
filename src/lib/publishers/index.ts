@@ -26,6 +26,18 @@ import { xueqiuPublisher } from "@/lib/publishers/xueqiu";
 import { yidianPublisher } from "@/lib/publishers/yidian";
 import { yuquePublisher } from "@/lib/publishers/yuque";
 import { zhihuPublisher } from "@/lib/publishers/zhihu";
+import { qiehaoPublisher } from "@/lib/publishers/qiehao";
+import { dafengPublisher } from "@/lib/publishers/dafeng";
+import { kuaichuanPublisher } from "@/lib/publishers/kuaichuan";
+import { sinakandianPublisher } from "@/lib/publishers/sinakandian";
+import { dongfangPublisher } from "@/lib/publishers/dongfang";
+import { btimePublisher } from "@/lib/publishers/btime";
+import { peoplehaoPublisher } from "@/lib/publishers/peoplehao";
+import { xinhuahaoPublisher } from "@/lib/publishers/xinhuahao";
+import { zhongqingPublisher } from "@/lib/publishers/zhongqing";
+import { tencentcloudPublisher } from "@/lib/publishers/tencentcloud";
+import { aliyunPublisher } from "@/lib/publishers/aliyun";
+import { huaweicloudPublisher } from "@/lib/publishers/huaweicloud";
 import type { PlatformPublisher } from "@/lib/publishers/types";
 import type { PlatformId } from "@/lib/types";
 
@@ -58,6 +70,18 @@ const registry: Record<PlatformId, PlatformPublisher> = {
   smzdm: smzdmPublisher,
   eastmoney: eastmoneyPublisher,
   x: xPublisher,
+  qiehao: qiehaoPublisher,
+  dafeng: dafengPublisher,
+  kuaichuan: kuaichuanPublisher,
+  sinakandian: sinakandianPublisher,
+  dongfang: dongfangPublisher,
+  btime: btimePublisher,
+  peoplehao: peoplehaoPublisher,
+  xinhuahao: xinhuahaoPublisher,
+  zhongqing: zhongqingPublisher,
+  tencentcloud: tencentcloudPublisher,
+  aliyun: aliyunPublisher,
+  huaweicloud: huaweicloudPublisher,
 };
 
 export function getPublisher(platform: PlatformId): PlatformPublisher {

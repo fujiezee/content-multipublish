@@ -19,6 +19,40 @@ export function createCnblogsAdapter(BaseAdapter) {
     /** @type {string | null} */
     xsrfToken = null;
 
+    /** Editor sync often sends HTML only; blog API expects Markdown postBody. */
+    htmlToMarkdown(html) {
+      return String(html || "")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/p>/gi, "\n\n")
+        .replace(/<\/h([1-6])>/gi, "\n\n")
+        .replace(/<h([1-6])[^>]*>/gi, (_, n) => `${"#".repeat(Number(n))} `)
+        .replace(/<li[^>]*>/gi, "- ")
+        .replace(/<\/?(ul|ol|div|span|section)[^>]*>/gi, "")
+        .replace(
+          /<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+          "[$2]($1)",
+        )
+        .replace(/<img[^>]*src=["']([^"']+)["'][^>]*>/gi, "![]($1)")
+        .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, "**$2**")
+        .replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, "*$2*")
+        .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
+        .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, "\n```\n$1\n```\n")
+        .replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, t) =>
+          String(t)
+            .split(/\n/)
+            .map((line) => `> ${line.replace(/<[^>]+>/g, "")}`)
+            .join("\n"),
+        )
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
+
     async getXsrfToken() {
       if (this.xsrfToken) return this.xsrfToken;
 
@@ -116,7 +150,16 @@ export function createCnblogsAdapter(BaseAdapter) {
         }
         this.xsrfToken = xsrfToken;
 
-        let markdown = article.markdown || "";
+        let markdown = String(article.markdown || "").trim();
+        if (!markdown) {
+          markdown = this.htmlToMarkdown(
+            article.html || article.content || "",
+          );
+        }
+        if (!markdown) {
+          throw new Error("正文不能为空（未收到 markdown/html）");
+        }
+
         markdown = await this.processImages(
           markdown,
           (src) => this.uploadImageByUrl(src),

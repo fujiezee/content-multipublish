@@ -126,21 +126,41 @@ function extractLocalEditorArticle() {
       : pending?.title && !isBadArticleTitle(pending.title)
         ? pending.title
         : "") || "";
-  const html =
+  const rawHtml =
     bodyEl?.innerHTML?.trim() || pending?.content || pending?.html || "";
-  if (!articleTitle || !html) return null;
+  if (!articleTitle || !rawHtml) return null;
+
+  const origin = window.location.origin;
+  const html = rawHtml.replace(
+    /(\s(?:src|href|poster)=["'])([^"']+)(["'])/gi,
+    (full, pre, url, post) => {
+      const s = String(url || "").trim();
+      if (
+        !s ||
+        s.startsWith("data:") ||
+        s.startsWith("blob:") ||
+        s.startsWith("#") ||
+        /^https?:\/\//i.test(s)
+      ) {
+        return full;
+      }
+      if (s.startsWith("//")) return `${pre}${window.location.protocol}${s}${post}`;
+      if (s.startsWith("/")) return `${pre}${origin}${s}${post}`;
+      return `${pre}${origin}/${s.replace(/^\.\//, "")}${post}`;
+    },
+  );
 
   const coverFromAttr = coverEl?.getAttribute("data-dwgeo-article-cover")?.trim();
   let cover = coverFromAttr || undefined;
   if (cover?.startsWith("/")) {
-    cover = `${window.location.origin}${cover}`;
+    cover = `${origin}${cover}`;
   }
   if (!cover) {
     const firstImg = bodyEl?.querySelector("img[src]");
     const src = firstImg?.getAttribute("src")?.trim();
     if (src && !src.startsWith("data:") && !src.includes("article-placeholder")) {
       cover = src.startsWith("/")
-        ? `${window.location.origin}${src}`
+        ? `${origin}${src}`
         : src;
     }
   }
@@ -281,6 +301,10 @@ function buildPendingArticle(post) {
   if (!articleTitle) return null;
 
   const cover = pickArticleCover(post);
+  const familyVariants =
+    post.familyVariants && typeof post.familyVariants === "object"
+      ? post.familyVariants
+      : undefined;
 
   return {
     title: articleTitle,
@@ -289,6 +313,7 @@ function buildPendingArticle(post) {
     markdown: post.markdown || "",
     summary: post.desc || post.summary || undefined,
     ...(cover ? { cover } : {}),
+    ...(familyVariants ? { familyVariants } : {}),
     source: post.source || {
       url: window.location.href,
       platform: "local-editor",
@@ -345,13 +370,26 @@ function stashAndOpenExtensionActionPopup(pendingArticle, done, options = {}) {
   };
 
   try {
+    const familyVariants =
+      stamped.familyVariants && typeof stamped.familyVariants === "object"
+        ? stamped.familyVariants
+        : {};
     // Clear recovered sync first so the popup won't stick to a previous article.
     chrome.storage.local.remove("activeSyncState", () => {
-      chrome.storage.local.set({ pendingArticle: stamped }, () => {
-        if (chrome.runtime.lastError) {
-          console.warn("[dianwu-geo] stash pendingArticle:", chrome.runtime.lastError);
-        }
-      });
+      chrome.storage.local.set(
+        {
+          pendingArticle: stamped,
+          dwgeoFamilyVariants: familyVariants,
+        },
+        () => {
+          if (chrome.runtime.lastError) {
+            console.warn(
+              "[dianwu-geo] stash pendingArticle:",
+              chrome.runtime.lastError,
+            );
+          }
+        },
+      );
     });
   } catch (err) {
     console.warn("[dianwu-geo] stash pendingArticle failed:", err);
@@ -393,6 +431,8 @@ function mergeManualSyncSource(fromDom, fromSession) {
     summary: fromDom.summary || fromDom.desc || fromSession.summary || fromSession.desc,
     desc: fromDom.desc || fromDom.summary || fromSession.desc || fromSession.summary,
     cover: fromDom.cover || fromSession.cover,
+    familyVariants:
+      fromDom.familyVariants || fromSession.familyVariants || undefined,
   };
 }
 
@@ -547,12 +587,48 @@ function routeBridgeAction(action) {
     return;
   }
 
+  if (action.method === "setFamilyVariants") {
+    const familyVariants =
+      action.familyVariants && typeof action.familyVariants === "object"
+        ? action.familyVariants
+        : {};
+    chrome.runtime.sendMessage(
+      { type: "SET_FAMILY_VARIANTS", familyVariants },
+      () => {
+        if (chrome.runtime.lastError) {
+          console.warn(
+            "[dianwu-geo] setFamilyVariants:",
+            chrome.runtime.lastError.message,
+          );
+        }
+        if (action.eventID != null) {
+          sendToWindow({
+            eventID: action.eventID,
+            result: { success: true },
+          });
+        }
+      },
+    );
+    return;
+  }
+
   if (action.method === "getSyncState") {
     // Same source as the popup "同步完成" UI — read storage directly.
     chrome.storage.local.get("activeSyncState", (data) => {
       sendToWindow({
         eventID: action.eventID,
         result: data?.activeSyncState || null,
+      });
+    });
+    return;
+  }
+
+  if (action.method === "getSyncHistory") {
+    // Same source as the popup「同步历史」page.
+    chrome.storage.local.get("syncHistory", (data) => {
+      sendToWindow({
+        eventID: action.eventID,
+        result: Array.isArray(data?.syncHistory) ? data.syncHistory : [],
       });
     });
     return;
@@ -617,82 +693,95 @@ function routeBridgeAction(action) {
       return;
     }
 
-    chrome.runtime.sendMessage(
-      {
-        type: "SYNC_ARTICLE",
-        payload: {
-          article: {
-            title: articleTitle,
-            content: htmlContent,
-            html: htmlContent,
-            markdown: post.markdown || "",
-            cover: post.thumb || post.cover,
-          },
-          platforms,
-          skipHistory: true,
-          source: "legacy-api",
-          syncId: currentSyncId,
+    const syncPayload = {
+      type: "SYNC_ARTICLE",
+      payload: {
+        article: {
+          title: articleTitle,
+          content: htmlContent,
+          html: htmlContent,
+          markdown: post.markdown || "",
+          cover: post.thumb || post.cover,
         },
+        platforms,
+        skipHistory: true,
+        source: "legacy-api",
+        syncId: currentSyncId,
       },
-      (resp) => {
-        const finish = (results, error) => {
-          if (error) {
-            failAllAccounts(error);
-            if (eventID != null) {
-              sendToWindow({
-                eventID,
-                result: { success: false, error },
-              });
-            }
-          } else {
-            applySyncResults(results || [], { finalize: true });
-            if (eventID != null) {
-              sendToWindow({
-                eventID,
-                result: { success: true, results: results || [] },
-              });
-            }
-          }
-          currentSyncId = null;
-        };
+    };
 
+    const finish = (results, error) => {
+      if (error) {
+        failAllAccounts(error);
+        if (eventID != null) {
+          sendToWindow({
+            eventID,
+            result: { success: false, error },
+          });
+        }
+      } else {
+        applySyncResults(results || [], { finalize: true });
+        if (eventID != null) {
+          sendToWindow({
+            eventID,
+            result: { success: true, results: results || [] },
+          });
+        }
+      }
+      currentSyncId = null;
+    };
+
+    const stateMatchesCurrent = (state) => {
+      if (!state) return false;
+      const selected = state.selectedPlatforms;
+      if (Array.isArray(selected) && selected.length) {
+        const set = new Set(selected.map((s) => String(s).toLowerCase()));
+        return platforms.every((p) => set.has(String(p).toLowerCase()));
+      }
+      const results = state.results || [];
+      return platforms.some((p) =>
+        results.some(
+          (r) =>
+            r?.platform &&
+            String(r.platform).toLowerCase() === String(p).toLowerCase(),
+        ),
+      );
+    };
+
+    const readMatchingResults = (onMiss) => {
+      chrome.storage.local.get("activeSyncState", (data) => {
+        const state = data?.activeSyncState;
+        if (stateMatchesCurrent(state) && state?.results?.length) {
+          finish(state.results);
+        } else {
+          onMiss();
+        }
+      });
+    };
+
+    // Drop stale "completed" snapshot so the editor poll cannot finalize the
+    // wrong platforms before SYNC_ARTICLE writes the new syncing state.
+    chrome.storage.local.remove("activeSyncState", () => {
+      chrome.runtime.sendMessage(syncPayload, (resp) => {
         if (chrome.runtime.lastError) {
           const err = chrome.runtime.lastError.message || "扩展同步失败";
           console.error("[dianwu-geo] addTask:", err);
-          // Fallback: read activeSyncState written by the service worker
-          chrome.storage.local.get("activeSyncState", (data) => {
-            const state = data?.activeSyncState;
-            if (state?.results?.length) {
-              finish(state.results);
-            } else {
-              finish([], err);
-            }
-          });
+          readMatchingResults(() => finish([], err));
           return;
         }
         if (resp?.error) {
-          chrome.storage.local.get("activeSyncState", (data) => {
-            const state = data?.activeSyncState;
-            if (state?.results?.length) {
-              finish(state.results);
-            } else {
-              finish([], String(resp.error));
-            }
-          });
+          readMatchingResults(() => finish([], String(resp.error)));
           return;
         }
 
-        // Prefer response results; fall back to storage (popup UI reads this)
         const fromResp = resp?.results;
         if (Array.isArray(fromResp) && fromResp.length) {
           finish(fromResp);
           return;
         }
-        chrome.storage.local.get("activeSyncState", (data) => {
-          finish(data?.activeSyncState?.results || []);
-        });
-      },
-    );
+        readMatchingResults(() => finish([]));
+      });
+    });
     return;
   }
 

@@ -9,11 +9,21 @@
           "header": "x-requested-with",
           "operation": "set",
           "value": "fetch"
+        },
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://zhuanlan.zhihu.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://zhuanlan.zhihu.com/write"
         }
       ]
     },
     "condition": {
-      "urlFilter": "www.zhihu.com/api/",
+      "urlFilter": "zhuanlan.zhihu.com/api/",
       "resourceTypes": ["xmlhttprequest"]
     }
   },
@@ -27,11 +37,21 @@
           "header": "x-requested-with",
           "operation": "set",
           "value": "fetch"
+        },
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.zhihu.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://zhuanlan.zhihu.com/write"
         }
       ]
     },
     "condition": {
-      "urlFilter": "zhuanlan.zhihu.com/api/",
+      "urlFilter": "www.zhihu.com/api/",
       "resourceTypes": ["xmlhttprequest"]
     }
   },

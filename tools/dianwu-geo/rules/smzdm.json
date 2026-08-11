@@ -1,0 +1,71 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://post.smzdm.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://post.smzdm.com/tougao/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "post.smzdm.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://post.smzdm.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://post.smzdm.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "zhiyou.smzdm.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://post.smzdm.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://post.smzdm.com/tougao/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "www.smzdm.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

@@ -1,6 +1,8 @@
 (function () {
   var poster = {
-    versionNumber: 1001,
+    /** Page-bridge protocol; bump with SaaS handshake minProtocolVersion */
+    versionNumber: 1200,
+    product: "点物GEO",
     dev:
       location.hostname === "localhost" || location.hostname === "127.0.0.1",
   };
@@ -36,6 +38,10 @@
 
   poster.getSyncState = function (cb) {
     callFunc({ method: "getSyncState" }, cb);
+  };
+
+  poster.getSyncHistory = function (cb) {
+    callFunc({ method: "getSyncHistory" }, cb);
   };
 
   poster.addTask = function (task, statueandler, cb) {

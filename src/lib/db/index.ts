@@ -1,20 +1,24 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
+import { randomToken } from "@/lib/auth/password";
 import { DB_PATH, ensureDataDirs } from "@/lib/paths";
 import {
   ALL_PLATFORM_IDS,
   type Article,
+  type ArticleVariant,
   type CorpusItem,
   type GeoKeyword,
   type GeoKeywordArticle,
   type GeoKeywordArticleWithTitle,
   type GeoKeywordMine,
   type JobStatus,
+  type PlatformFamily,
   type PlatformId,
   type PlatformSession,
   type PublishEngine,
   type PublishJob,
   type SessionStatus,
+  type VariantSource,
   normalizePublishEngine,
 } from "@/lib/types";
 
@@ -118,10 +122,28 @@ function migrate(database: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_geo_kw_articles_keyword ON geo_keyword_articles(keyword_id);
+
+    CREATE TABLE IF NOT EXISTS article_variants (
+      id TEXT PRIMARY KEY,
+      article_id TEXT NOT NULL,
+      family TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'adapted',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+      UNIQUE(article_id, family)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_article_variants_article
+      ON article_variants(article_id);
   `);
 
   migrateGeoKeywordArticleLinks(database);
   migratePublishJobEngine(database);
+  migrateAuthAndWorkspace(database);
 
   for (const platform of ALL_PLATFORM_IDS) {
     database
@@ -133,7 +155,16 @@ function migrate(database: Database.Database) {
   }
 }
 
-export function listArticles(): Article[] {
+export function listArticles(workspaceId?: string | null): Article[] {
+  if (workspaceId) {
+    return getDb()
+      .prepare(
+        `SELECT * FROM articles
+         WHERE workspace_id = ? OR workspace_id IS NULL OR workspace_id = ''
+         ORDER BY updated_at DESC`,
+      )
+      .all(workspaceId) as Article[];
+  }
   return getDb()
     .prepare("SELECT * FROM articles ORDER BY updated_at DESC")
     .all() as Article[];
@@ -148,10 +179,13 @@ export function getArticle(id: string): Article | undefined {
 export function createArticle(article: Article) {
   getDb()
     .prepare(
-      `INSERT INTO articles (id, title, body, summary, cover_path, created_at, updated_at)
-       VALUES (@id, @title, @body, @summary, @cover_path, @created_at, @updated_at)`,
+      `INSERT INTO articles (id, title, body, summary, cover_path, workspace_id, created_at, updated_at)
+       VALUES (@id, @title, @body, @summary, @cover_path, @workspace_id, @created_at, @updated_at)`,
     )
-    .run(article);
+    .run({
+      ...article,
+      workspace_id: article.workspace_id ?? null,
+    });
 }
 
 export function updateArticle(
@@ -177,6 +211,83 @@ export function updateArticle(
     )
     .run(next);
   return next;
+}
+
+export function listVariants(articleId: string): ArticleVariant[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM article_variants
+       WHERE article_id = ?
+       ORDER BY family ASC`,
+    )
+    .all(articleId) as ArticleVariant[];
+}
+
+export function getVariant(
+  articleId: string,
+  family: PlatformFamily,
+): ArticleVariant | undefined {
+  return getDb()
+    .prepare(
+      `SELECT * FROM article_variants WHERE article_id = ? AND family = ?`,
+    )
+    .get(articleId, family) as ArticleVariant | undefined;
+}
+
+export function upsertVariant(input: {
+  articleId: string;
+  family: PlatformFamily;
+  title: string;
+  body: string;
+  summary?: string;
+  source: VariantSource;
+}): ArticleVariant {
+  const existing = getVariant(input.articleId, input.family);
+  const now = new Date().toISOString();
+  if (existing) {
+    const next: ArticleVariant = {
+      ...existing,
+      title: input.title,
+      body: input.body,
+      summary: input.summary ?? "",
+      source: input.source,
+      updated_at: now,
+    };
+    getDb()
+      .prepare(
+        `UPDATE article_variants
+         SET title = @title, body = @body, summary = @summary,
+             source = @source, updated_at = @updated_at
+         WHERE id = @id`,
+      )
+      .run(next);
+    return next;
+  }
+  const created: ArticleVariant = {
+    id: randomUUID(),
+    article_id: input.articleId,
+    family: input.family,
+    title: input.title,
+    body: input.body,
+    summary: input.summary ?? "",
+    source: input.source,
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO article_variants
+       (id, article_id, family, title, body, summary, source, created_at, updated_at)
+       VALUES (@id, @article_id, @family, @title, @body, @summary, @source, @created_at, @updated_at)`,
+    )
+    .run(created);
+  return created;
+}
+
+export function deleteVariant(articleId: string, family: PlatformFamily) {
+  getDb()
+    .prepare(`DELETE FROM article_variants WHERE article_id = ? AND family = ?`)
+    .run(articleId, family);
 }
 
 export function deleteArticle(id: string) {
@@ -483,6 +594,272 @@ function migratePublishJobEngine(database: Database.Database) {
   } catch (err) {
     console.warn("[db] migrate publish_jobs.engine:", err);
   }
+}
+
+function migrateAuthAndWorkspace(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workspace_users (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES workspace_users(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS extension_tokens (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL DEFAULT '扩展绑定',
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES workspace_users(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token);
+      CREATE INDEX IF NOT EXISTS idx_extension_tokens_token ON extension_tokens(token);
+    `);
+
+    const cols = database
+      .prepare(`PRAGMA table_info(articles)`)
+      .all() as { name: string }[];
+    if (!cols.some((c) => c.name === "workspace_id")) {
+      database.exec(`ALTER TABLE articles ADD COLUMN workspace_id TEXT`);
+    }
+
+    const existing = database
+      .prepare(`SELECT id FROM workspaces WHERE id = ?`)
+      .get("ws_local") as { id: string } | undefined;
+    if (!existing) {
+      database
+        .prepare(
+          `INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)`,
+        )
+        .run("ws_local", "本地工作区", new Date().toISOString());
+    }
+  } catch (err) {
+    console.warn("[db] migrate auth/workspace:", err);
+  }
+}
+
+export function ensureDefaultWorkspace(): { id: string; name: string } {
+  const row = getDb()
+    .prepare(`SELECT id, name FROM workspaces WHERE id = ?`)
+    .get("ws_local") as { id: string; name: string } | undefined;
+  if (row) return row;
+  const created = {
+    id: "ws_local",
+    name: "本地工作区",
+    created_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO workspaces (id, name, created_at) VALUES (@id, @name, @created_at)`,
+    )
+    .run(created);
+  return { id: created.id, name: created.name };
+}
+
+export function createWorkspace(name: string): { id: string; name: string } {
+  const row = {
+    id: randomUUID(),
+    name: name.trim() || "工作区",
+    created_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO workspaces (id, name, created_at) VALUES (@id, @name, @created_at)`,
+    )
+    .run(row);
+  return { id: row.id, name: row.name };
+}
+
+export function createWorkspaceUser(input: {
+  workspaceId: string;
+  email: string;
+  passwordHash: string;
+  displayName?: string;
+}) {
+  const row = {
+    id: randomUUID(),
+    workspace_id: input.workspaceId,
+    email: input.email.trim().toLowerCase(),
+    password_hash: input.passwordHash,
+    display_name: input.displayName?.trim() || input.email.split("@")[0] || "用户",
+    created_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO workspace_users
+       (id, workspace_id, email, password_hash, display_name, created_at)
+       VALUES (@id, @workspace_id, @email, @password_hash, @display_name, @created_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getWorkspaceUserByEmail(email: string) {
+  return getDb()
+    .prepare(`SELECT * FROM workspace_users WHERE email = ?`)
+    .get(email.trim().toLowerCase()) as
+    | {
+        id: string;
+        workspace_id: string;
+        email: string;
+        password_hash: string;
+        display_name: string;
+        created_at: string;
+      }
+    | undefined;
+}
+
+export function getWorkspaceUser(id: string) {
+  return getDb()
+    .prepare(`SELECT * FROM workspace_users WHERE id = ?`)
+    .get(id) as
+    | {
+        id: string;
+        workspace_id: string;
+        email: string;
+        password_hash: string;
+        display_name: string;
+        created_at: string;
+      }
+    | undefined;
+}
+
+export function createAuthSession(input: {
+  userId: string;
+  workspaceId: string;
+  expiresAt: string;
+}) {
+  const row = {
+    id: randomUUID(),
+    user_id: input.userId,
+    workspace_id: input.workspaceId,
+    token: randomToken(32),
+    created_at: new Date().toISOString(),
+    expires_at: input.expiresAt,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO auth_sessions
+       (id, user_id, workspace_id, token, created_at, expires_at)
+       VALUES (@id, @user_id, @workspace_id, @token, @created_at, @expires_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getAuthSessionByToken(token: string) {
+  return getDb()
+    .prepare(`SELECT * FROM auth_sessions WHERE token = ?`)
+    .get(token) as
+    | {
+        id: string;
+        user_id: string;
+        workspace_id: string;
+        token: string;
+        created_at: string;
+        expires_at: string;
+      }
+    | undefined;
+}
+
+export function deleteAuthSessionByToken(token: string) {
+  getDb().prepare(`DELETE FROM auth_sessions WHERE token = ?`).run(token);
+}
+
+export function createExtensionTokenRow(input: {
+  workspaceId: string;
+  userId: string;
+  label?: string;
+}) {
+  const row = {
+    id: randomUUID(),
+    workspace_id: input.workspaceId,
+    user_id: input.userId,
+    token: `dwext_${randomToken(24)}`,
+    label: input.label?.trim() || "扩展绑定",
+    created_at: new Date().toISOString(),
+    last_used_at: null as string | null,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO extension_tokens
+       (id, workspace_id, user_id, token, label, created_at, last_used_at)
+       VALUES (@id, @workspace_id, @user_id, @token, @label, @created_at, @last_used_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getExtensionToken(token: string) {
+  return getDb()
+    .prepare(`SELECT * FROM extension_tokens WHERE token = ?`)
+    .get(token) as
+    | {
+        id: string;
+        workspace_id: string;
+        user_id: string;
+        token: string;
+        label: string;
+        created_at: string;
+        last_used_at: string | null;
+      }
+    | undefined;
+}
+
+export function listExtensionTokens(workspaceId: string) {
+  return getDb()
+    .prepare(
+      `SELECT id, workspace_id, user_id, token, label, created_at, last_used_at
+       FROM extension_tokens WHERE workspace_id = ? ORDER BY created_at DESC`,
+    )
+    .all(workspaceId) as Array<{
+    id: string;
+    workspace_id: string;
+    user_id: string;
+    token: string;
+    label: string;
+    created_at: string;
+    last_used_at: string | null;
+  }>;
+}
+
+export function touchExtensionToken(id: string) {
+  getDb()
+    .prepare(
+      `UPDATE extension_tokens SET last_used_at = ? WHERE id = ?`,
+    )
+    .run(new Date().toISOString(), id);
+}
+
+export function revokeExtensionToken(id: string, workspaceId: string) {
+  getDb()
+    .prepare(`DELETE FROM extension_tokens WHERE id = ? AND workspace_id = ?`)
+    .run(id, workspaceId);
 }
 
 function normalizeJob(row: PublishJob | undefined): PublishJob | undefined {

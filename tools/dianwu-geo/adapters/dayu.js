@@ -1,6 +1,10 @@
 /**
  * 大鱼号 — Wechatsync v1 dayu.js 移植（dashboard/save-draft + ns 图床）
+ *
+ * 现网首页仍注入 globalConfig，但已无旧结束标记 `var G = {`；
+ * 且游客页也会带 utoken，必须以 isLogin / wmid 判断登录。
  */
+import { getCookieValue } from "./_cookie.js";
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -21,49 +25,151 @@ export function createDayuAdapter(BaseAdapter) {
     /** @type {Array<{ org_url: string; url: string }>} */
     images = [];
 
+    /** Extract JS object after `var globalConfig =` (JSON or object literal). */
     parseGlobalConfig(html) {
-      const mark = "var globalConfig = ";
-      const authIndex = html.indexOf(mark);
-      if (authIndex === -1) return null;
-      const endIndex = html.indexOf("var G = {", authIndex);
-      if (endIndex === -1) return null;
-      const raw = html.substring(authIndex + mark.length, endIndex).trim();
+      const marks = ["var globalConfig = ", "window.globalConfig = "];
+      let start = -1;
+      for (const mark of marks) {
+        const idx = html.indexOf(mark);
+        if (idx !== -1) {
+          start = idx + mark.length;
+          break;
+        }
+      }
+      if (start === -1) return null;
+
+      // Prefer brace-balanced extract; legacy pages ended before `var G = {`
+      const legacyEnd = html.indexOf("var G = {", start);
+      let raw;
+      if (legacyEnd !== -1) {
+        raw = html.substring(start, legacyEnd).trim().replace(/;+\s*$/, "");
+      } else {
+        const braceStart = html.indexOf("{", start);
+        if (braceStart === -1) return null;
+        let depth = 0;
+        let end = -1;
+        for (let i = braceStart; i < html.length; i++) {
+          const ch = html[i];
+          if (ch === "{") depth += 1;
+          else if (ch === "}") {
+            depth -= 1;
+            if (depth === 0) {
+              end = i + 1;
+              break;
+            }
+          }
+        }
+        if (end === -1) return null;
+        raw = html.substring(braceStart, end);
+      }
+
       try {
-        // page embeds a JS object literal
-        return new Function(`return (${raw})`)();
+        return JSON.parse(raw);
       } catch {
+        try {
+          return new Function(`return (${raw})`)();
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    normalizeAvatar(avatar) {
+      if (!avatar) return undefined;
+      if (avatar.startsWith("http")) return avatar;
+      if (avatar.startsWith("//")) return `https:${avatar}`;
+      return `https://${avatar.replace(/^\/+/, "")}`;
+    }
+
+    accountFromConfig(pageConfig) {
+      const wmid = pageConfig?.wmid != null ? String(pageConfig.wmid).trim() : "";
+      const isLogin = pageConfig?.isLogin === true || pageConfig?.isLogin === 1;
+      if (!isLogin && !wmid) return null;
+      if (!pageConfig?.utoken) return null;
+
+      return {
+        utoken: String(pageConfig.utoken),
+        uploadSign: pageConfig.nsImageUploadSign || "",
+        uid: wmid || String(pageConfig.ucid || pageConfig.aid || "dayu"),
+        title:
+          pageConfig.weMediaName ||
+          pageConfig.subjectname ||
+          wmid ||
+          "大鱼号用户",
+        avatar: this.normalizeAvatar(pageConfig.wmAvator),
+      };
+    }
+
+    async fetchConfigFromUrl(url) {
+      const response = await this.runtime.fetch(url, {
+        credentials: "include",
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "Cache-Control": "no-cache",
+        },
+        redirect: "follow",
+      });
+      const finalUrl = response.url || url;
+      // Unauthenticated dashboard hops to ids.dayu.com
+      if (/ids\.dayu\.com|passport\.uc\.cn|redirect-login|\/login/i.test(finalUrl)) {
         return null;
       }
+      const html = await response.text();
+      if (/扫码登录|请使用UC浏览器扫码|正在生成二维码/.test(html) && !/isLogin"\s*:\s*true/.test(html)) {
+        // still try parse — guest pages also have QR copy
+      }
+      return this.parseGlobalConfig(html);
     }
 
     async ensureAccount() {
       if (this.account) return this.account;
-      const response = await this.runtime.fetch(
+
+      const urls = [
+        "https://mp.dayu.com/",
         "https://mp.dayu.com/dashboard/index",
-        { credentials: "include" },
-      );
-      const html = await response.text();
-      const pageConfig = this.parseGlobalConfig(html);
-      if (!pageConfig?.utoken || !pageConfig?.wmid) {
-        throw new Error("大鱼号未登录或登录已过期");
+        "https://mp.dayu.com/dashboard/article/write",
+      ];
+
+      let lastConfig = null;
+      for (const url of urls) {
+        try {
+          const cfg = await this.fetchConfigFromUrl(url);
+          if (!cfg) continue;
+          lastConfig = cfg;
+          const account = this.accountFromConfig(cfg);
+          if (account) {
+            this.account = account;
+            return this.account;
+          }
+        } catch {
+          // try next
+        }
       }
-      const avatar = pageConfig.wmAvator || "";
-      this.account = {
-        utoken: pageConfig.utoken,
-        uploadSign: pageConfig.nsImageUploadSign || "",
-        uid: String(pageConfig.wmid),
-        title: pageConfig.weMediaName || "",
-        avatar: !avatar
-          ? undefined
-          : avatar.startsWith("http")
-            ? avatar
-            : `https://${avatar.replace(/^\/+/, "")}`,
-      };
-      return this.account;
+
+      // Cookie hint: some sessions keep wmid-like values even if HTML parse fails
+      const cookieWmid = await getCookieValue(
+        this.runtime,
+        [".dayu.com", "dayu.com", "mp.dayu.com"],
+        "wmid",
+      );
+      if (lastConfig?.utoken && cookieWmid) {
+        this.account = {
+          utoken: String(lastConfig.utoken),
+          uploadSign: lastConfig.nsImageUploadSign || "",
+          uid: String(cookieWmid),
+          title: lastConfig.weMediaName || String(cookieWmid),
+          avatar: this.normalizeAvatar(lastConfig.wmAvator),
+        };
+        return this.account;
+      }
+
+      throw new Error("大鱼号未登录或登录已过期（未检测到 isLogin/wmid）");
     }
 
     async checkAuth() {
       try {
+        // Always refresh — avoid caching a previous guest/false negative
+        this.account = null;
         const account = await this.ensureAccount();
         return {
           isAuthenticated: true,

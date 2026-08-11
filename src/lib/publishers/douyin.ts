@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Cookie, Page } from "playwright";
 import {
   captureDebugScreenshot,
   clickFirstVisible,
@@ -14,24 +14,54 @@ import type { PublishContent, PublishResult } from "@/lib/types";
 
 const EDITOR =
   "https://creator.douyin.com/creator-micro/content/post/image";
+const HOME = "https://creator.douyin.com/creator-micro/home";
 const LOGIN = "https://creator.douyin.com/";
 
-/** Real login cookies only — guest pages also set passport_csrf_token / odin_tt. */
-const SESSION_COOKIE_NAMES = new Set([
+/**
+ * Real login cookies only — guest / landing pages also set
+ * passport_csrf_token / odin_tt / ttwid and must NOT count as logged in.
+ */
+const SESSION_COOKIE_NAMES = [
   "sessionid",
   "sessionid_ss",
   "sid_guard",
   "sid_tt",
-]);
+  "sid_ucp_v1",
+  "uid_tt",
+  "uid_tt_ss",
+] as const;
+
+export function cookiesHaveDouyinSession(
+  cookies: { name: string; value?: string | null }[],
+): boolean {
+  const byName = new Map(
+    cookies.map((c) => [c.name, c.value ?? ""] as const),
+  );
+  // Prefer classic sessionid; fall back to sid_tt / sid_ucp_v1 + uid
+  const hasSession =
+    (byName.get("sessionid")?.length ?? 0) > 10 ||
+    (byName.get("sessionid_ss")?.length ?? 0) > 10 ||
+    (byName.get("sid_tt")?.length ?? 0) > 10 ||
+    (byName.get("sid_ucp_v1")?.length ?? 0) > 10 ||
+    (byName.get("sid_guard")?.length ?? 0) > 10;
+  const hasUid =
+    (byName.get("uid_tt")?.length ?? 0) > 5 ||
+    (byName.get("uid_tt_ss")?.length ?? 0) > 5 ||
+    hasSession;
+  return hasSession && hasUid;
+}
+
+export async function readDouyinCookies(page: Page): Promise<Cookie[]> {
+  // Pull all cookies — URL-scoped queries can miss sibling ByteDance hosts
+  const all = await page.context().cookies();
+  return all.filter((c) =>
+    /(douyin|iesdouyin|bytedance)\.com$/i.test(c.domain.replace(/^\./, "")),
+  );
+}
 
 async function hasDouyinSessionCookie(page: Page): Promise<boolean> {
-  const cookies = await page.context().cookies([
-    "https://creator.douyin.com",
-    "https://www.douyin.com",
-  ]);
-  return cookies.some(
-    (c) => SESSION_COOKIE_NAMES.has(c.name) && (c.value?.length ?? 0) > 10,
-  );
+  const cookies = await readDouyinCookies(page);
+  return cookiesHaveDouyinSession(cookies);
 }
 
 async function hasDouyinLoginCard(page: Page): Promise<boolean> {
@@ -41,10 +71,12 @@ async function hasDouyinLoginCard(page: Page): Promise<boolean> {
     "text=验证码登录",
     "text=请使用抖音APP扫码",
     "text=打开抖音扫一扫",
+    "text=我是创作者",
+    "text=创作者登录",
+    'button:has-text("登录"):visible',
     '[class*="login-card"]',
     '[class*="loginCard"]',
-    '[class*="qr-code"]',
-    '[class*="qrcode"]',
+    "#animate_qrcode_container",
   ];
   for (const sel of markers) {
     const loc = page.locator(sel).first();
@@ -60,9 +92,15 @@ async function isLoggedIn(page: Page): Promise<boolean> {
   if (/passport|sso\.|\/login\b|account\/login|scan\/login/i.test(url)) {
     return false;
   }
-  // Creator home often shows QR modal while still on creator.douyin.com/
+  if (!(await hasDouyinSessionCookie(page))) return false;
+  // Creator landing often shows QR while still on creator.douyin.com/
   if (await hasDouyinLoginCard(page)) return false;
-  return hasDouyinSessionCookie(page);
+  // Prefer creator-micro routes once hydrated
+  if (/creator\.douyin\.com\/?(\?|$)/i.test(url) && !/creator-micro/i.test(url)) {
+    // Cookie present but still on marketing/login shell — not ready
+    return false;
+  }
+  return true;
 }
 
 async function publish(
@@ -95,7 +133,8 @@ async function publish(
     if (!(await isLoggedIn(page)) || /passport|\/login/i.test(page.url())) {
       return {
         success: false,
-        error: "抖音未登录或登录已过期，请先在「账号」页扫码连接",
+        error:
+          "抖音未登录或登录已过期。请在打开的窗口扫码登录，登录成功后关闭窗口，下次会记住登录态",
         screenshotPath: await captureDebugScreenshot(page, "douyin-not-login"),
         keepOpen: true,
       };
@@ -183,3 +222,6 @@ export const douyinPublisher: PlatformPublisher = {
   isLoggedIn,
   publish,
 };
+
+export const douyinHomeUrl = HOME;
+export { SESSION_COOKIE_NAMES };

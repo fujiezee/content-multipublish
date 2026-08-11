@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.ifeng.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.ifeng.com/manage/originalArticle"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.ifeng.com/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.ifeng.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.ifeng.com/manage/originalArticle"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.ifeng.com/cmpp/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

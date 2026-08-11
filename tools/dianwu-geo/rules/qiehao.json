@@ -1,0 +1,71 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://om.qq.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://om.qq.com/article/articlePublish"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "om.qq.com/article/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://om.qq.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://om.qq.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "om.qq.com/mindex/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://om.qq.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://om.qq.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "om.qq.com/userAuth/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "点物GEO 文章多平台同步助手",
   "description": "点物GEO 文章多平台同步助手 · https://dianwu.ai",
-  "version": "2.0.0",
+  "version": "2.6.0",
   "icons": {
     "16": "assets/icon-16.png",
     "48": "assets/icon-48.png",
@@ -291,6 +291,81 @@
         "id": "yidian_rules",
         "enabled": true,
         "path": "rules/yidian.json"
+      },
+      {
+        "id": "smzdm_rules",
+        "enabled": true,
+        "path": "rules/smzdm.json"
+      },
+      {
+        "id": "x_rules",
+        "enabled": true,
+        "path": "rules/x.json"
+      },
+      {
+        "id": "qiehao_rules",
+        "enabled": true,
+        "path": "rules/qiehao.json"
+      },
+      {
+        "id": "tencentcloud_rules",
+        "enabled": true,
+        "path": "rules/tencentcloud.json"
+      },
+      {
+        "id": "aliyun_rules",
+        "enabled": true,
+        "path": "rules/aliyun.json"
+      },
+      {
+        "id": "huaweicloud_rules",
+        "enabled": true,
+        "path": "rules/huaweicloud.json"
+      },
+      {
+        "id": "dafeng_rules",
+        "enabled": true,
+        "path": "rules/dafeng.json"
+      },
+      {
+        "id": "kuaichuan_rules",
+        "enabled": true,
+        "path": "rules/kuaichuan.json"
+      },
+      {
+        "id": "sinakandian_rules",
+        "enabled": true,
+        "path": "rules/sinakandian.json"
+      },
+      {
+        "id": "dongfang_rules",
+        "enabled": true,
+        "path": "rules/dongfang.json"
+      },
+      {
+        "id": "btime_rules",
+        "enabled": true,
+        "path": "rules/btime.json"
+      },
+      {
+        "id": "peoplehao_rules",
+        "enabled": true,
+        "path": "rules/peoplehao.json"
+      },
+      {
+        "id": "xinhuahao_rules",
+        "enabled": true,
+        "path": "rules/xinhuahao.json"
+      },
+      {
+        "id": "zhongqing_rules",
+        "enabled": true,
+        "path": "rules/zhongqing.json"
+      },
+      {
+        "id": "xiaohongshu_rules",
+        "enabled": true,
+        "path": "rules/xiaohongshu.json"
       }
     ]
   }

@@ -1,0 +1,25 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://cloud.tencent.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://cloud.tencent.com/developer/article/write-new"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "cloud.tencent.com/developer/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

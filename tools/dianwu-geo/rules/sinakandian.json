@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.sina.com.cn"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.sina.com.cn/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.sina.com.cn/aj/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.sina.com.cn"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.sina.com.cn/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.sina.com.cn/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

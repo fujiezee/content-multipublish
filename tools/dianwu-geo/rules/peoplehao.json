@@ -1,0 +1,25 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://pdcreator.pdnews.cn"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://pdcreator.pdnews.cn/producer"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "pdcreator.pdnews.cn/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

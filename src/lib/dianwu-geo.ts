@@ -32,6 +32,21 @@ export const EXTENSION_PLATFORM_IDS: readonly PlatformId[] = [
   "dayu",
   "sohufocus",
   "yidian",
+  "smzdm",
+  "x",
+  "qiehao",
+  "dafeng",
+  "kuaichuan",
+  "sinakandian",
+  "dongfang",
+  "btime",
+  "peoplehao",
+  "xinhuahao",
+  "zhongqing",
+  "tencentcloud",
+  "aliyun",
+  "huaweicloud",
+  "xiaohongshu",
 ] as const;
 
 export const EXTENSION_PLATFORM_ID_SET = new Set<PlatformId>(EXTENSION_PLATFORM_IDS);
@@ -40,11 +55,23 @@ export function isExtensionPlatform(id: PlatformId): boolean {
   return EXTENSION_PLATFORM_ID_SET.has(id);
 }
 
+export type DianwuGeoFamilyVariant = {
+  title?: string;
+  content?: string;
+  html?: string;
+  markdown?: string;
+  summary?: string;
+  cover?: string;
+  thumb?: string;
+};
+
 export type DianwuGeoArticle = {
   title: string;
   desc?: string;
   content: string;
   thumb?: string;
+  /** Per platform-family bodies for popup multi-account sync. */
+  familyVariants?: Record<string, DianwuGeoFamilyVariant>;
 };
 
 export type DianwuGeoOpenResult = {
@@ -80,6 +107,10 @@ export type DianwuGeoSyncResultEvent = {
   error?: string;
   postUrl?: string;
   url?: string;
+  draftOnly?: boolean;
+  awaitingUserPublish?: boolean;
+  outcome?: string;
+  message?: string;
 };
 
 export type DianwuGeoAddTaskResult = {
@@ -92,6 +123,58 @@ export type DianwuGeoSyncState = {
   status?: string;
   results?: DianwuGeoSyncResultEvent[];
   selectedPlatforms?: string[];
+  /** Epoch ms when the extension started this sync (activeSyncState.startTime). */
+  startTime?: number;
+};
+
+/** True when activeSyncState belongs to the platforms we are currently waiting on. */
+export function syncStateMatchesPlatforms(
+  state: DianwuGeoSyncState | null | undefined,
+  platforms: readonly string[],
+  opts?: { startedAt?: number },
+): boolean {
+  if (!state || !platforms.length) return false;
+
+  const selected = state.selectedPlatforms;
+  if (Array.isArray(selected) && selected.length > 0) {
+    const selectedSet = new Set(
+      selected.map((s) => String(s).toLowerCase()),
+    );
+    if (!platforms.every((p) => selectedSet.has(String(p).toLowerCase()))) {
+      return false;
+    }
+  } else {
+    // Legacy / incomplete state: require at least one overlapping result platform
+    // so a previous sync's "completed" snapshot cannot finalize unrelated jobs.
+    const results = state.results || [];
+    const hit = platforms.some((p) =>
+      results.some(
+        (r) =>
+          !!r.platform &&
+          String(r.platform).toLowerCase() === String(p).toLowerCase(),
+      ),
+    );
+    if (!hit) return false;
+  }
+
+  const startedAt = opts?.startedAt;
+  if (
+    typeof startedAt === "number" &&
+    typeof state.startTime === "number" &&
+    state.startTime + 1000 < startedAt
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** One entry from extension popup「同步历史」(chrome.storage.local.syncHistory). */
+export type DianwuGeoSyncHistoryEntry = {
+  id: string;
+  title?: string;
+  cover?: string;
+  timestamp?: number;
+  results?: DianwuGeoSyncResultEvent[];
 };
 
 const PLACEHOLDER_THUMB = "/geo-sync/article-placeholder.svg";
@@ -107,6 +190,9 @@ type PageSyncer = {
   ) => void;
   getSyncState?: (
     cb: (err: string | null, state?: DianwuGeoSyncState | null) => void,
+  ) => void;
+  getSyncHistory?: (
+    cb: (err: string | null, history?: DianwuGeoSyncHistoryEntry[]) => void,
   ) => void;
   addTask?: (
     task: { post: Record<string, unknown>; accounts: DianwuGeoAccount[] },
@@ -165,6 +251,30 @@ function toAbsoluteUrl(src: string): string {
   return src;
 }
 
+/** Make local /api/uploads and relative media absolute so extension can fetch+reupload. */
+function absolutizeContentMedia(html: string): string {
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:3000";
+  return html.replace(
+    /(\s(?:src|href|poster)=["'])([^"']+)(["'])/gi,
+    (full, pre: string, url: string, post: string) => {
+      const s = url.trim();
+      if (
+        !s ||
+        s.startsWith("data:") ||
+        s.startsWith("blob:") ||
+        s.startsWith("#") ||
+        /^https?:\/\//i.test(s)
+      ) {
+        return full;
+      }
+      if (s.startsWith("//")) return `${pre}${window.location.protocol}${s}${post}`;
+      if (s.startsWith("/")) return `${pre}${origin}${s}${post}`;
+      return `${pre}${origin}/${s.replace(/^\.\//, "")}${post}`;
+    },
+  );
+}
+
 function extractFirstImageUrl(html: string): string | undefined {
   if (typeof DOMParser === "undefined") return undefined;
   const doc = new DOMParser().parseFromString(html, "text/html");
@@ -191,9 +301,27 @@ export function resolveArticleThumb(article: DianwuGeoArticle): string {
 }
 
 function normalizeArticle(article: DianwuGeoArticle) {
-  const content = article.content || "<p></p>";
+  const content = absolutizeContentMedia(article.content || "<p></p>");
   const title = article.title.trim() || "未命名";
-  const cover = resolveArticleCover(article);
+  const cover = resolveArticleCover({ ...article, content });
+  let familyVariants:
+    | Record<string, DianwuGeoFamilyVariant>
+    | undefined;
+  if (article.familyVariants && typeof article.familyVariants === "object") {
+    familyVariants = {};
+    for (const [key, value] of Object.entries(article.familyVariants)) {
+      const html = absolutizeContentMedia(
+        value.content || value.html || "",
+      );
+      familyVariants[key] = {
+        ...value,
+        content: html,
+        html,
+        cover: value.cover ? toAbsoluteUrl(value.cover) : undefined,
+        thumb: value.thumb ? toAbsoluteUrl(value.thumb) : undefined,
+      };
+    }
+  }
   return {
     title,
     desc: article.desc?.trim() || undefined,
@@ -202,6 +330,7 @@ function normalizeArticle(article: DianwuGeoArticle) {
     html: content,
     thumb: cover,
     cover,
+    ...(familyVariants ? { familyVariants } : {}),
     source: {
       url: window.location.href,
       platform: "local-editor",
@@ -226,6 +355,31 @@ export function stashArticleForDianwuGeo(article: DianwuGeoArticle) {
   const normalized = normalizeArticle(article);
   stashPendingArticle(normalized);
   return normalized;
+}
+
+/** Push family variants into extension storage (after panel open / async fetch). */
+export async function pushDianwuGeoFamilyVariants(
+  familyVariants: Record<string, DianwuGeoFamilyVariant> | undefined,
+): Promise<void> {
+  if (!familyVariants || typeof window === "undefined") return;
+  const payload = { type: "SET_FAMILY_VARIANTS", familyVariants };
+
+  try {
+    dispatchBridgeRequest({
+      method: "setFamilyVariants",
+      familyVariants,
+    });
+  } catch {
+    // ignore
+  }
+
+  if (window.__DWGEO_EXTENSION_ID__ && getExtensionRuntime()?.sendMessage) {
+    try {
+      await sendExternalExtensionMessage(payload);
+    } catch {
+      // ignore — bridge path may still land
+    }
+  }
 }
 
 function extensionMissingError() {
@@ -796,6 +950,65 @@ export async function getDianwuGeoSyncState(
     }
   }
   return null;
+}
+
+/** Read extension popup「同步历史」list. */
+export async function getDianwuGeoSyncHistory(
+  timeoutMs = 4_000,
+): Promise<DianwuGeoSyncHistoryEntry[]> {
+  if (typeof window === "undefined") return [];
+  attachReadyListener();
+
+  if (window.$syncer?.getSyncHistory) {
+    try {
+      const viaSyncer = await new Promise<DianwuGeoSyncHistoryEntry[] | null>(
+        (resolve) => {
+          const timer = window.setTimeout(() => resolve(null), timeoutMs);
+          try {
+            window.$syncer!.getSyncHistory!((err, history) => {
+              window.clearTimeout(timer);
+              if (err) {
+                resolve(null);
+                return;
+              }
+              resolve(Array.isArray(history) ? history : []);
+            });
+          } catch {
+            window.clearTimeout(timer);
+            resolve(null);
+          }
+        },
+      );
+      if (viaSyncer) return viaSyncer;
+    } catch {
+      // fall through
+    }
+  }
+
+  try {
+    const eventID = Math.floor(Date.now() + Math.random() * 100_000);
+    const wait = waitForBridgeResult<DianwuGeoSyncHistoryEntry[]>(
+      eventID,
+      timeoutMs,
+    );
+    dispatchBridgeRequest({ method: "getSyncHistory", eventID });
+    const result = await wait;
+    if (Array.isArray(result)) return result;
+  } catch {
+    // External messaging fallback
+  }
+
+  if (window.__DWGEO_EXTENSION_ID__ && getExtensionRuntime()?.sendMessage) {
+    try {
+      const resp = await sendExternalExtensionMessage<{
+        syncHistory?: DianwuGeoSyncHistoryEntry[];
+      }>({ type: "GET_SYNC_HISTORY" }, timeoutMs);
+      return Array.isArray(resp?.syncHistory) ? resp.syncHistory : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 /** Per-platform result events from the content script. */

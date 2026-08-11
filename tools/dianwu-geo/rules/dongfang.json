@@ -1,0 +1,71 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.eastday.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.eastday.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.eastday.com/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.eastday.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.eastday.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.eastday.com/mp/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.tt.cn"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.tt.cn/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.tt.cn/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]
