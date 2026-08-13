@@ -23,6 +23,7 @@ import { createZhihuAdapter } from "./adapters/zhihu.js";
 import { createSmzdmAdapter } from "./adapters/smzdm.js";
 import { createXAdapter } from "./adapters/x.js";
 import { createQiehaoAdapter } from "./adapters/qiehao.js";
+import { createCsdnAdapter } from "./adapters/csdn.js";
 import { createDafengAdapter } from "./adapters/dafeng.js";
 import { createKuaichuanAdapter } from "./adapters/kuaichuan.js";
 import { createSinakandianAdapter } from "./adapters/sinakandian.js";
@@ -93,6 +94,7 @@ function buildExtraClasses(BaseAdapter) {
     createSmzdmAdapter(BaseAdapter),
     createXAdapter(BaseAdapter),
     createQiehaoAdapter(BaseAdapter),
+    createCsdnAdapter(BaseAdapter),
     createDafengAdapter(BaseAdapter),
     createKuaichuanAdapter(BaseAdapter),
     createSinakandianAdapter(BaseAdapter),

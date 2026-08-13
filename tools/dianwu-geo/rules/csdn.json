@@ -19,7 +19,7 @@
     },
     "condition": {
       "urlFilter": "bizapi.csdn.net",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   },
   {
@@ -42,7 +42,7 @@
     },
     "condition": {
       "urlFilter": "imgservice.csdn.net",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   }
 ]
