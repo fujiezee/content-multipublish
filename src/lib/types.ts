@@ -22,6 +22,9 @@ export type PlatformId =
   | "xueqiu"
   | "sohufocus"
   | "xiaohongshu"
+  | "shunqi"
+  | "shunqi_product"
+  | "bafang"
   | "douyin"
   | "netease"
   | "smzdm"
@@ -38,7 +41,8 @@ export type PlatformId =
   | "zhongqing"
   | "tencentcloud"
   | "aliyun"
-  | "huaweicloud";
+  | "huaweicloud"
+  | "dianwu";
 
 export type SessionStatus = "connected" | "disconnected" | "expired";
 
@@ -74,8 +78,162 @@ export interface Article {
   body: string;
   summary: string;
   cover_path: string | null;
+  /** 主稿时一并起的短视频合集名 */
+  script_title?: string;
   /** SaaS workspace ownership (nullable for legacy rows → default workspace). */
   workspace_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArticleInfographic {
+  id: string;
+  article_id: string;
+  /** master = 长文共用；social = 社媒单独 */
+  family: string;
+  url: string;
+  headline: string;
+  kind: string;
+  card_json: string;
+  anchor_text: string;
+  insert_hint: string;
+  created_at: string;
+}
+
+export type VideoScriptGenre = "edu" | "drama";
+
+export type VideoScriptHookStyle =
+  | "talk"
+  | "roast"
+  | "confess"
+  | "argue"
+  | "expose"
+  | "contrast"
+  | "drama";
+
+export type VideoSpeakMode = "narration" | "dialogue";
+
+export function normalizeSpeakMode(value: unknown): VideoSpeakMode {
+  return value === "dialogue" ? "dialogue" : "narration";
+}
+
+export type VideoEpisodeStatus = "idle" | "generating" | "ready" | "failed";
+
+export type VideoShot = {
+  index: number;
+  seconds: number;
+  visual: string;
+  onScreen: string;
+  voiceover: string;
+  imagePrompt: string;
+  speaker?: string;
+  speakerId?: string;
+  sceneUrl?: string;
+  clipUrl?: string;
+};
+
+export interface ArticleVideoSeries {
+  id: string;
+  article_id: string;
+  genre: VideoScriptGenre;
+  hook_style: string;
+  title: string;
+  logline: string;
+  audience: string;
+  notes: string;
+  episode_count: number;
+  character_id: string | null;
+  cast_json: string;
+  speak_mode: VideoSpeakMode;
+  voice_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type VideoCharacterPhoto = { url: string };
+
+export type VideoCharacterAngle = {
+  id: string;
+  label: string;
+  url: string;
+};
+
+export interface ArticleVideoCharacter {
+  id: string;
+  article_id: string;
+  name: string;
+  photos_json: string;
+  angles_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CharacterSource = "photo" | "script";
+
+export interface StudioCharacter {
+  id: string;
+  workspace_id: string;
+  name: string;
+  photos_json: string;
+  angles_json: string;
+  source: CharacterSource;
+  article_id: string | null;
+  voice_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CharacterScriptRef = {
+  article_id: string;
+  title: string;
+};
+
+export type CharacterCatalogItem = {
+  id: string;
+  name: string;
+  source: CharacterSource;
+  article_id: string | null;
+  article_title: string | null;
+  voice_id: string;
+  scripts: CharacterScriptRef[];
+  photos: VideoCharacterPhoto[];
+  angles: VideoCharacterAngle[];
+  updated_at: string;
+};
+
+export type VideoCatalogItem = {
+  article_id: string;
+  article_title: string;
+  series_id: string;
+  series_title: string;
+  genre: VideoScriptGenre;
+  hook_style?: string;
+  episode_id: string;
+  episode_no: number;
+  episode_title: string;
+  confirmed: boolean;
+  video_status: VideoEpisodeStatus;
+  video_url: string | null;
+  updated_at: string;
+};
+
+export interface ArticleVideoEpisode {
+  id: string;
+  series_id: string;
+  episode_no: number;
+  title: string;
+  hook: string;
+  voiceover: string;
+  on_screen: string;
+  recap: string;
+  next_hook: string;
+  duration_sec: number;
+  shots_json: string;
+  confirmed: number;
+  video_status: VideoEpisodeStatus;
+  video_url: string | null;
+  video_error: string | null;
+  video_model: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +324,7 @@ export interface CorpusItem {
   content: string;
   created_at: string;
   updated_at: string;
+  workspace_id?: string | null;
 }
 
 /** AI 文案类型 */
@@ -241,6 +400,7 @@ export interface GeoKeywordMine {
   context: string;
   created_at: string;
   updated_at: string;
+  workspace_id?: string | null;
 }
 
 export interface GeoKeyword {
@@ -426,10 +586,28 @@ export const PLATFORMS: {
     limits: "标题 ≤ 20 字；扩展/本机填好后需你确认发布",
   },
   {
+    id: "shunqi",
+    name: "顺企网",
+    description: "顺企网企业新闻（填稿待发，会员后台添加新闻）",
+    limits: "标题建议 ≤ 80 字；可上传 1 张新闻图（封面或正文首图）；扩展填好后需你在后台确认发布",
+  },
+  {
+    id: "shunqi_product",
+    name: "顺企网产品",
+    description: "顺企网添加产品（填稿待发，需上传产品图）",
+    limits: "标题建议 ≤ 80 字；必须有封面或正文图；扩展填好后需你确认发布",
+  },
+  {
+    id: "bafang",
+    name: "八方资源网",
+    description: "八方资源网发布产品（填稿待发，会员中心 pg=Supply）",
+    limits: "标题建议 ≤ 32 字；必须有产品图；扩展填好后需你确认发布",
+  },
+  {
     id: "douyin",
-    name: "抖音图文",
-    description: "抖音创作者中心图文",
-    limits: "标题 ≤ 20 字，描述 ≤ 1000 字；通常需上传图片",
+    name: "抖音文章",
+    description: "抖音创作者中心文章（长文，可插图）",
+    limits: "标题 ≤ 30 字；正文按文章编辑器填写，图跟正文走",
   },
   {
     id: "netease",
@@ -527,7 +705,59 @@ export const PLATFORMS: {
     description: "华为云社区博客",
     limits: "标题 ≤ 64 字；同步为 Markdown 草稿（草稿箱最多 10 篇）",
   },
+  {
+    id: "dianwu",
+    name: "点物目录",
+    description: "dianwu.ai 目录（仅本地工作区可推送）",
+    limits: "仅本地账号；推送后直接上线",
+  },
 ];
 
 /** All platform ids in registry order. */
 export const ALL_PLATFORM_IDS: PlatformId[] = PLATFORMS.map((p) => p.id);
+
+export type MentionSource =
+  | "deepseek"
+  | "doubao"
+  | "yuanbao"
+  | "qwen"
+  | "other";
+
+export const MENTION_SOURCES: { id: MentionSource; label: string }[] = [
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "doubao", label: "豆包" },
+  { id: "yuanbao", label: "元宝" },
+  { id: "qwen", label: "通义" },
+  { id: "other", label: "其他" },
+];
+
+export type MentionProbeSource = "deepseek" | "doubao";
+
+export interface MentionSettings {
+  brands: string[];
+  questions: string[];
+  updated_at: string;
+  doubao_model: string;
+  doubao_configured: boolean;
+}
+
+export interface MentionResult {
+  id: string;
+  run_id: string;
+  question: string;
+  source: MentionSource;
+  mentioned: boolean;
+  excerpt: string;
+  answer: string;
+  error: string;
+}
+
+export interface MentionRun {
+  id: string;
+  created_at: string;
+  model: string;
+  hit_count: number;
+  miss_count: number;
+  error_count: number;
+  results: MentionResult[];
+}
