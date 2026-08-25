@@ -1,37 +1,51 @@
 import { NextResponse } from "next/server";
 import { streamAdaptArticleToFamily } from "@/lib/ai/adapt-variant";
 import {
+  applyMasterInfographicsToHtml,
+  ensureStoredInfographicsInHtml,
+  mergeInfographicHtml,
+} from "@/lib/ai/apply-master-infographics";
+import {
   ALL_PLATFORM_FAMILIES,
   familyLabel,
   isPlatformFamily,
   type PlatformFamily,
 } from "@/lib/content/platform-families";
+import { requireApiUser } from "@/lib/auth/api";
 import {
-  getArticle,
+  getArticleInWorkspace,
   listVariants,
   upsertVariant,
 } from "@/lib/db";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_req: Request, ctx: Ctx) {
+export async function GET(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
-  const article = getArticle(id);
+  const article = getArticleInWorkspace(id, auth.ctx.workspaceId);
   if (!article) {
     return NextResponse.json({ error: "文章不存在" }, { status: 404 });
   }
   return NextResponse.json({
-    variants: listVariants(id),
+    variants: listVariants(id).map((variant) => {
+      const body = ensureStoredInfographicsInHtml(id, variant.family, variant.body);
+      return body === variant.body ? variant : { ...variant, body };
+    }),
     families: ALL_PLATFORM_FAMILIES,
   });
 }
 
 export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
-  const article = getArticle(id);
+  const article = getArticleInWorkspace(id, auth.ctx.workspaceId);
   if (!article) {
     return NextResponse.json({ error: "文章不存在" }, { status: 404 });
   }
@@ -80,7 +94,7 @@ export async function POST(req: Request, ctx: Ctx) {
             articleId: id,
             family,
             title: adapted.title,
-            body: adapted.bodyHtml,
+            body: applyMasterInfographicsToHtml(id, family, adapted.bodyHtml),
             summary: adapted.summary,
             source: "adapted",
           }),
@@ -190,7 +204,11 @@ export async function POST(req: Request, ctx: Ctx) {
                 articleId: id,
                 family,
                 title: event.result.title,
-                body: event.result.bodyHtml,
+                body: applyMasterInfographicsToHtml(
+                  id,
+                  family,
+                  event.result.bodyHtml,
+                ),
                 summary: event.result.summary,
                 source: "adapted",
               });
@@ -231,8 +249,10 @@ export async function POST(req: Request, ctx: Ctx) {
 }
 
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
-  const article = getArticle(id);
+  const article = getArticleInWorkspace(id, auth.ctx.workspaceId);
   if (!article) {
     return NextResponse.json({ error: "文章不存在" }, { status: 404 });
   }
@@ -242,14 +262,23 @@ export async function PUT(req: Request, ctx: Ctx) {
     return NextResponse.json({ error: "无效的平台族" }, { status: 400 });
   }
 
+  const existing = listVariants(id).find((v) => v.family === body.family);
   const variant = upsertVariant({
     articleId: id,
     family: body.family,
     title: typeof body.title === "string" ? body.title : article.title,
-    body: typeof body.body === "string" ? body.body : "",
+    body:
+      typeof body.body === "string"
+        ? ensureStoredInfographicsInHtml(
+            id,
+            body.family,
+            mergeInfographicHtml(body.body, existing?.body || ""),
+          )
+        : "",
     summary: typeof body.summary === "string" ? body.summary : "",
     source: "manual",
   });
 
+  await persistCloudflareDb();
   return NextResponse.json({ variant });
 }

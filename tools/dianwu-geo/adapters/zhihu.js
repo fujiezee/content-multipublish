@@ -5,6 +5,12 @@
  * 参考：VSCode-Zhihu / zhihu.nvim / 现网 zhuanlan API
  */
 import { getCookieValue } from "./_cookie.js";
+import {
+  assertHostedImages,
+  extractImageSrcs,
+} from "./_images.js";
+import { md5Hex } from "./_md5.js";
+import { ossV1PutHeaders } from "./_oss-v1.js";
 
 const DEFAULT_TOPIC_KEYWORDS = [
   "经验分享",
@@ -15,6 +21,53 @@ const DEFAULT_TOPIC_KEYWORDS = [
   "编程",
   "产品",
 ];
+
+const ZHIMG_HOSTS = [
+  "zhimg.com",
+  "pic-private.zhihu.com",
+];
+
+function isZhihuCdn(url) {
+  const s = String(url || "");
+  return ZHIMG_HOSTS.some((h) => s.includes(h));
+}
+
+function sniffImageType(bytes) {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return "image/png";
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46
+  ) {
+    return "image/gif";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return "";
+}
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -148,21 +201,201 @@ export function createZhihuAdapter(BaseAdapter) {
     }
 
     async md5Hex(buffer) {
-      const hash = await crypto.subtle.digest("MD5", buffer);
-      return [...new Uint8Array(hash)]
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
+      return md5Hex(buffer);
+    }
+
+    async waitForImageReady(imageId) {
+      const headers = await this.authHeaders();
+      delete headers["Content-Type"];
+      for (let i = 0; i < 8; i += 1) {
+        try {
+          const res = await this.runtime.fetch(
+            `https://api.zhihu.com/images/${imageId}`,
+            { credentials: "include", headers },
+          );
+          const meta = await res.json().catch(() => null);
+          if (meta?.status === "completed" || meta?.original_hash) return meta;
+        } catch {
+          // 轮询失败不阻断；OSS 已 PUT 成功即可用 pic 地址
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+      return null;
+    }
+
+    bytesToBase64(bytes) {
+      let bin = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      return btoa(bin);
+    }
+
+    async ensureZhihuTab() {
+      const tabs = await chrome.tabs.query({
+        url: ["*://zhuanlan.zhihu.com/*", "*://www.zhihu.com/*"],
+      });
+      const existing = tabs.find((t) => t.id && !/signin|account/i.test(t.url || ""));
+      if (existing?.id) return { tabId: existing.id, created: false };
+      const tab = await chrome.tabs.create({
+        url: "https://zhuanlan.zhihu.com/write",
+        active: false,
+      });
+      if (!tab?.id) throw new Error("无法打开知乎写作页");
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        const cur = await chrome.tabs.get(tab.id).catch(() => null);
+        const url = cur?.url || "";
+        if (/signin|account/i.test(url)) {
+          throw new Error("请先登录知乎后再同步");
+        }
+        if (/zhuanlan\.zhihu\.com/i.test(url) && cur?.status === "complete") {
+          await new Promise((r) => setTimeout(r, 400));
+          return { tabId: tab.id, created: true };
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return { tabId: tab.id, created: true };
+    }
+
+    md5Base64(bytes) {
+      const hex = md5Hex(bytes);
+      const arr = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < arr.length; i += 1) {
+        arr[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return this.bytesToBase64(arr);
+    }
+
+    ossXmlMessage(text) {
+      const msg = String(text || "").match(/<Message>([\s\S]*?)<\/Message>/i);
+      const code = String(text || "").match(/<Code>([\s\S]*?)<\/Code>/i);
+      const parts = [code?.[1], msg?.[1]].filter(Boolean);
+      return parts.join(": ") || String(text || "").slice(0, 80);
+    }
+
+    /**
+     * runtime.fetch 会强制带 Cookie。OSS PUT 用原生 fetch（omit）。
+     * 签名对齐 ali-oss：用 x-oss-date，不能用 Date（浏览器会丢掉导致 403）。
+     */
+    async putOssObject(objectKey, bytes, contentType, creds) {
+      const url = `https://zhihu-pics-upload.zhimg.com/${objectKey}`;
+      const contentMd5 = this.md5Base64(bytes);
+      const variants = [
+        { cname: false, contentType, contentMd5 },
+        { cname: true, contentType, contentMd5 },
+        { cname: false, contentType, contentMd5: "" },
+        { cname: true, contentType, contentMd5: "" },
+        { cname: false, contentType: "", contentMd5: "" },
+        { cname: true, contentType: "", contentMd5: "" },
+      ];
+      let lastErr = "知乎 OSS 上传失败";
+      for (const variant of variants) {
+        const headers = await ossV1PutHeaders({
+          bucket: "zhihu-pics",
+          objectKey,
+          accessId: creds.accessId,
+          accessKey: creds.accessKey,
+          stsToken: creds.stsToken,
+          contentType: variant.contentType,
+          contentMd5: variant.contentMd5,
+          cname: variant.cname,
+        });
+        const mime = variant.contentType || "application/octet-stream";
+        try {
+          const put = await fetch(url, {
+            method: "PUT",
+            credentials: "omit",
+            headers,
+            body: new Blob([bytes], { type: mime }),
+          });
+          const text = await put.text().catch(() => "");
+          if (put.ok) return;
+          lastErr = `知乎 OSS 上传失败 HTTP ${put.status}: ${this.ossXmlMessage(text)}`;
+          if (put.status !== 403) throw new Error(lastErr);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+            const page = await this.putOssViaZhihuTab(url, headers, bytes, mime);
+            if (page.ok) return;
+            lastErr =
+              page.status === 403
+                ? `知乎 OSS 上传失败 HTTP 403: ${this.ossXmlMessage(page.text)}`
+                : page.text || msg;
+            if (page.status && page.status !== 403) {
+              throw new Error(
+                `知乎图床上传失败 HTTP ${page.status}: ${page.text}`,
+              );
+            }
+            continue;
+          }
+          if (!/HTTP 403/.test(msg)) throw err;
+          lastErr = msg;
+        }
+      }
+      throw new Error(lastErr);
+    }
+
+    async putOssViaZhihuTab(url, headers, bytes, mime) {
+      const { tabId, created } = await this.ensureZhihuTab();
+      try {
+        const [injection] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          func: (reqUrl, reqHeaders, b64, type) =>
+            new Promise((resolve) => {
+              const binary = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+              const xhr = new XMLHttpRequest();
+              xhr.open("PUT", reqUrl, true);
+              xhr.withCredentials = false;
+              xhr.timeout = 30_000;
+              Object.entries(reqHeaders || {}).forEach(([key, value]) => {
+                try {
+                  xhr.setRequestHeader(key, String(value));
+                } catch {
+                  // Date / Origin / Referer 禁改
+                }
+              });
+              xhr.onload = () =>
+                resolve({
+                  ok: xhr.status >= 200 && xhr.status < 300,
+                  status: xhr.status,
+                  text: String(xhr.responseText || "").slice(0, 160),
+                });
+              xhr.onerror = () =>
+                resolve({ ok: false, status: 0, text: "Failed to fetch" });
+              xhr.ontimeout = () =>
+                resolve({ ok: false, status: 0, text: "OSS 上传超时" });
+              xhr.send(
+                new Blob([binary], { type: type || "application/octet-stream" }),
+              );
+            }),
+          args: [url, headers, this.bytesToBase64(bytes), mime],
+        });
+        return (
+          injection?.result || { ok: false, status: 0, text: "页内上传无返回" }
+        );
+      } finally {
+        if (created) {
+          await chrome.tabs.remove(tabId).catch(() => undefined);
+        }
+      }
     }
 
     async uploadImageBinary(blob) {
       const buffer = await blob.arrayBuffer();
-      let imageHash;
-      try {
-        imageHash = await this.md5Hex(buffer);
-      } catch {
-        // crypto.subtle MD5 unavailable in some runtimes — fall back to random
-        imageHash = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const bytes = new Uint8Array(buffer);
+      if (!bytes.length) throw new Error("图片下载为空");
+      const sniffed = sniffImageType(bytes);
+      if (!sniffed) {
+        throw new Error("下载结果不是图片（可能被拦或返回了登录页）");
       }
+      const typed =
+        blob.type && blob.type.startsWith("image/")
+          ? new Blob([bytes], { type: blob.type })
+          : new Blob([bytes], { type: sniffed });
+      const imageHash = md5Hex(bytes);
       const tokenRes = await this.runtime.fetch("https://api.zhihu.com/images", {
         method: "POST",
         credentials: "include",
@@ -172,91 +405,120 @@ export function createZhihuAdapter(BaseAdapter) {
         },
         body: JSON.stringify({ image_hash: imageHash, source: "article" }),
       });
-      const token = await tokenRes.json();
+      const tokenText = await tokenRes.text();
+      let token;
+      try {
+        token = JSON.parse(tokenText);
+      } catch {
+        throw new Error(
+          `知乎图片 token 非 JSON（HTTP ${tokenRes.status}）: ${tokenText.slice(0, 120)}`,
+        );
+      }
       const uploadFile = token?.upload_file;
       if (!uploadFile) {
-        throw new Error(token?.error?.message || "知乎图片 token 失败");
+        throw new Error(
+          token?.error?.message ||
+            token?.message ||
+            `知乎图片 token 失败 HTTP ${tokenRes.status}`,
+        );
       }
       if (uploadFile.state === 1 && uploadFile.image_id) {
-        // already on CDN
-        const ready = await this.runtime.fetch(
-          `https://api.zhihu.com/images/${uploadFile.image_id}`,
-          { credentials: "include", headers: await this.authHeaders() },
-        );
-        const meta = await ready.json();
+        const meta = await this.waitForImageReady(uploadFile.image_id);
         const key = meta?.original_hash || uploadFile.image_id;
-        return { url: `https://pic4.zhimg.com/${key}` };
+        return { url: `https://pic1.zhimg.com/${key}` };
       }
       const objectKey = uploadFile.object_key;
-      const uploadToken = token.upload_token;
-      if (!objectKey || !uploadToken?.access_token) {
-        throw new Error("知乎 OSS 凭证缺失");
+      const uploadToken = token.upload_token || {};
+      const accessId = uploadToken.access_id || uploadToken.accessId;
+      const accessKey = uploadToken.access_key || uploadToken.accessKey;
+      const stsToken = uploadToken.access_token || uploadToken.securityToken;
+      if (!objectKey || !accessId || !accessKey || !stsToken) {
+        throw new Error("知乎 OSS 凭证缺失（access_id / access_key / token）");
       }
-      const contentType = blob.type || "image/png";
-      const put = await fetch(
-        `https://zhihu-pics-upload.zhimg.com/${objectKey}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": contentType,
-            "x-oss-security-token": uploadToken.access_token,
-            Date: new Date().toUTCString(),
-          },
-          body: blob,
-        },
-      );
-      if (!put.ok) {
-        throw new Error(`知乎 OSS 上传失败 HTTP ${put.status}`);
+      const contentType = typed.type || sniffed || "image/png";
+      await this.putOssObject(objectKey, bytes, contentType, {
+        accessId,
+        accessKey,
+        stsToken,
+      });
+      if (uploadFile.image_id) {
+        const meta = await this.waitForImageReady(uploadFile.image_id);
+        const ready = meta?.original_hash || objectKey;
+        return { url: `https://pic1.zhimg.com/${ready}` };
       }
       let key = objectKey;
       if (contentType === "image/gif" && !key.endsWith(".gif")) key = `${key}.gif`;
-      return { url: `https://pic4.zhimg.com/${key}` };
+      return { url: `https://pic1.zhimg.com/${key}` };
+    }
+
+    async downloadImageBlob(src) {
+      const res = await this.runtime.fetch(src, { credentials: "omit" });
+      if (!res.ok) {
+        throw new Error(`图片下载失败 HTTP ${res.status}: ${String(src).slice(0, 96)}`);
+      }
+      const blob = await res.blob();
+      if (!blob.size) throw new Error(`图片下载为空: ${String(src).slice(0, 96)}`);
+      return blob;
     }
 
     async uploadImageByUrl(src) {
-      // Localhost / data URI: Zhihu server cannot fetch — upload binary via OSS.
-      const needsBinary =
-        src.startsWith("data:") ||
-        /^(https?:\/\/)?(127\.0\.0\.1|localhost)(:\d+)?\//i.test(src) ||
-        src.startsWith("/api/uploads/");
+      const url = String(src || "").trim();
+      if (!url) throw new Error("空图片地址");
+      if (isZhihuCdn(url)) return { url };
 
-      if (needsBinary || src.startsWith("data:")) {
-        let blob;
-        if (src.startsWith("data:")) {
-          const res = await fetch(src);
-          blob = await res.blob();
-        } else {
-          const res = await this.runtime.fetch(src);
-          if (!res.ok) throw new Error(`图片下载失败: ${src}`);
-          blob = await res.blob();
-        }
+      if (url.startsWith("data:")) {
+        const blob = await fetch(url).then((r) => r.blob());
         return this.uploadImageBinary(blob);
       }
 
-      const headers = await this.authHeaders();
-      delete headers["Content-Type"];
-      try {
-        const response = await this.runtime.fetch(
-          "https://zhuanlan.zhihu.com/api/uploaded_images",
-          {
-            method: "POST",
-            credentials: "include",
-            headers: {
-              ...headers,
-              "Content-Type": "application/x-www-form-urlencoded",
+      // 知乎站内转存经常吃不到 Vigma / 境外 CDN；只接受真正的 zhimg 地址。
+      const zhihuCanFetch =
+        !/vigma\.app|localhost|127\.0\.0\.1/i.test(url) &&
+        /^https?:\/\//i.test(url);
+      if (zhihuCanFetch) {
+        try {
+          const headers = await this.authHeaders();
+          delete headers["Content-Type"];
+          const response = await this.runtime.fetch(
+            "https://zhuanlan.zhihu.com/api/uploaded_images",
+            {
+              method: "POST",
+              credentials: "include",
+              headers: {
+                ...headers,
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: new URLSearchParams({ url, source: "article" }),
             },
-            body: new URLSearchParams({ url: src, source: "article" }),
-          },
-        );
-        const res = await response.json();
-        if (res?.src) return { url: res.src };
-      } catch {
-        // fall through to binary
+          );
+          const res = await response.json().catch(() => null);
+          if (res?.src && isZhihuCdn(res.src)) return { url: res.src };
+        } catch {
+          // fall through to binary
+        }
       }
 
-      const imageResponse = await this.runtime.fetch(src);
-      if (!imageResponse.ok) throw new Error(`图片下载失败: ${src}`);
-      return this.uploadImageBinary(await imageResponse.blob());
+      return this.uploadImageBinary(await this.downloadImageBlob(url));
+    }
+
+    async rehostContent(html, onProgress) {
+      const srcs = [...new Set(extractImageSrcs(html))];
+      let out = html;
+      let done = 0;
+      const pending = srcs.filter((src) => src && !isZhihuCdn(src));
+      for (const src of pending) {
+        const uploaded = await this.uploadImageByUrl(src);
+        if (!uploaded?.url || !isZhihuCdn(uploaded.url)) {
+          throw new Error(
+            `知乎图床未返回平台地址（${String(src).slice(0, 80)}）`,
+          );
+        }
+        out = out.split(src).join(uploaded.url);
+        done += 1;
+        onProgress?.({ current: done, total: pending.length, src });
+      }
+      assertHostedImages(out, ZHIMG_HOSTS, "知乎");
+      return out;
     }
 
     async resolveTitleImage(article, contentHtml) {
@@ -276,7 +538,7 @@ export function createZhihuAdapter(BaseAdapter) {
       if (!candidates.length) return "";
 
       const src = candidates[0];
-      if (/zhimg\.com/i.test(src)) return src;
+      if (isZhihuCdn(src)) return src;
       try {
         const uploaded = await this.uploadImageByUrl(src);
         return uploaded.url || "";
@@ -583,22 +845,7 @@ export function createZhihuAdapter(BaseAdapter) {
             compactHtml: true,
           });
         }
-        content = await this.processImages(
-          content,
-          (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: [
-              "zhimg.com",
-              "pic1.zhimg.com",
-              "pic2.zhimg.com",
-              "pic3.zhimg.com",
-              "pic4.zhimg.com",
-              "picx.zhimg.com",
-              "pica.zhimg.com",
-            ],
-            onProgress: options?.onImageProgress,
-          },
-        );
+        content = await this.rehostContent(content, options?.onImageProgress);
         content = this.transformContent(content);
         const titleImage = await this.resolveTitleImage(article, content);
         const excerpt = this.buildExcerpt(article, content);

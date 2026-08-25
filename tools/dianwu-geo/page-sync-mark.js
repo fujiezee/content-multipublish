@@ -12,6 +12,13 @@
     if (detail.extensionId) {
       window.__DWGEO_EXTENSION_ID__ = detail.extensionId;
     }
+    if (detail.version) {
+      window.__DWGEO_EXTENSION_VERSION__ = detail.version;
+      document.documentElement?.setAttribute(
+        "data-dwgeo-extension-version",
+        detail.version,
+      );
+    }
     if (detail.injectUrl && !window.$syncer) {
       const script = document.createElement("script");
       script.src = detail.injectUrl;
@@ -30,8 +37,9 @@
   if (root) {
     const extensionId = root.getAttribute("data-dwgeo-extension-id");
     const injectUrl = root.getAttribute("data-dwgeo-inject-url");
-    if (extensionId || injectUrl) {
-      applyInit({ extensionId, injectUrl });
+    const version = root.getAttribute("data-dwgeo-extension-version");
+    if (extensionId || injectUrl || version) {
+      applyInit({ extensionId, injectUrl, version });
     }
   }
 })();

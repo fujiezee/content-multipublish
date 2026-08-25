@@ -7,6 +7,7 @@
  *       content 为 Draft.js raw JSON 字符串；草稿用 accessible=private
  */
 import { getCookieValue } from "./_cookie.js";
+import { extractImageSrcs } from "./_images.js";
 
 const DOMAINS = [".douban.com", "douban.com", "www.douban.com", "m.douban.com"];
 const COOKIE_URLS = [
@@ -208,19 +209,27 @@ export function createDoubanAdapter(BaseAdapter) {
         const title = String(article.title || "").trim().slice(0, 100);
         if (!title) throw new Error("标题不能为空");
 
-        let plain = String(article.markdown || "").trim();
+        const rawHtml = article.html || article.content || "";
+        const rawMd = String(article.markdown || "");
+        const hadImages =
+          extractImageSrcs(rawHtml).length > 0 ||
+          /!\[[^\]]*]\([^)]+\)/.test(rawMd);
+
+        let plain = rawMd.trim();
         if (!plain) {
-          plain = this.htmlToPlain(article.html || article.content || "");
+          plain = this.htmlToPlain(rawHtml);
         } else {
           // strip light markdown markers for Draft.js plain blocks
           plain = plain
             .replace(/^#{1,6}\s+/gm, "")
             .replace(/(\*\*|__)(.*?)\1/g, "$2")
             .replace(/(\*|_)([^*_\n]+)\1/g, "$2")
-            .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+            .replace(/!\[([^\]]*)\]\([^)]+\)/g, "")
             .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
             .trim();
         }
+        // HTML path: strip residual image alt leftovers
+        plain = plain.replace(/\n{3,}/g, "\n\n").trim();
         if (!plain) throw new Error("正文不能为空");
 
         const frodotk = await this.ensureFrodoToken();
@@ -289,6 +298,9 @@ export function createDoubanAdapter(BaseAdapter) {
           postId: String(data.id),
           postUrl: String(postUrl).replace(/\\\//g, "/"),
           draftOnly,
+          message: hadImages
+            ? "豆瓣日记暂不支持插图，已同步纯文字（图片已跳过）"
+            : undefined,
         });
       } catch (error) {
         return this.createResult(false, {

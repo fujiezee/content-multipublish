@@ -1,3 +1,7 @@
+import {
+  processAndAssertImages,
+  createHostOnlyUpload,
+} from "./_images.js";
 /**
  * 新浪看点 — mp.sina.com.cn（已与微博头条文章整合）
  * 能独立草稿则保存；若跳到微博长文编辑器则明确提示改用 weibo 平台。
@@ -321,7 +325,7 @@ export function createSinakandianAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      return { url: src };
+      return createHostOnlyUpload(["sina.com.cn","sinaimg.cn","weibo.com"], "新浪看点")(src);
     }
 
     async publish(article, options) {
@@ -340,12 +344,14 @@ export function createSinakandianAdapter(BaseAdapter) {
 
         const title = String(article.title || "").trim().slice(0, 64);
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
           {
             skipPatterns: ["sina.com.cn", "sinaimg.cn", "weibo.com"],
             onProgress: options?.onImageProgress,
+            platformName: "新浪看点",
           },
         );
 

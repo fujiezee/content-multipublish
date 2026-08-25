@@ -1,8 +1,9 @@
 /** Browser bridge for 点物GEO 文章多平台同步助手 Chrome extension (dianwu.ai). */
 
+import { toAbsoluteMediaUrl } from "@/lib/content/media-urls";
 import type { PlatformId } from "@/lib/types";
 
-export const DIANWU_GEO_PRODUCT_NAME = "点物GEO 文章多平台同步助手";
+export const DIANWU_GEO_PRODUCT_NAME = "点物 文章多平台同步助手";
 
 export const PENDING_ARTICLE_STORAGE_KEY = "dianwu-geo-pending-article";
 
@@ -47,12 +48,23 @@ export const EXTENSION_PLATFORM_IDS: readonly PlatformId[] = [
   "aliyun",
   "huaweicloud",
   "xiaohongshu",
+  "douyin",
+  "shunqi",
+  "shunqi_product",
+  "bafang",
 ] as const;
 
 export const EXTENSION_PLATFORM_ID_SET = new Set<PlatformId>(EXTENSION_PLATFORM_IDS);
 
 export function isExtensionPlatform(id: PlatformId): boolean {
   return EXTENSION_PLATFORM_ID_SET.has(id);
+}
+
+/** 只走扩展，未装扩展也不再改走本机 Playwright。 */
+export const EXTENSION_REQUIRED_IDS: readonly PlatformId[] = ["douyin", "weixin"];
+
+export function isExtensionRequiredPlatform(id: PlatformId): boolean {
+  return EXTENSION_REQUIRED_IDS.includes(id);
 }
 
 export type DianwuGeoFamilyVariant = {
@@ -70,6 +82,7 @@ export type DianwuGeoArticle = {
   desc?: string;
   content: string;
   thumb?: string;
+  cover?: string;
   /** Per platform-family bodies for popup multi-account sync. */
   familyVariants?: Record<string, DianwuGeoFamilyVariant>;
 };
@@ -215,6 +228,7 @@ declare global {
     $syncer?: PageSyncer;
     __DWGEO_EXTENSION_INSTALLED__?: boolean;
     __DWGEO_EXTENSION_ID__?: string;
+    __DWGEO_EXTENSION_VERSION__?: string;
     chrome?: { runtime?: ChromeRuntimeBridge };
   }
 }
@@ -229,6 +243,16 @@ export function getExtensionIdFromDom(): string | undefined {
   );
 }
 
+export function getInstalledExtensionVersion(): string | null {
+  if (typeof window === "undefined") return null;
+  const fromWindow = window.__DWGEO_EXTENSION_VERSION__?.trim();
+  if (fromWindow) return fromWindow;
+  const fromDom = document.documentElement
+    ?.getAttribute("data-dwgeo-extension-version")
+    ?.trim();
+  return fromDom || null;
+}
+
 function syncExtensionGlobalsFromDom() {
   const domId = getExtensionIdFromDom();
   if (domId) {
@@ -238,23 +262,29 @@ function syncExtensionGlobalsFromDom() {
   if (document.documentElement?.getAttribute("data-dwgeo-extension") === "1") {
     window.__DWGEO_EXTENSION_INSTALLED__ = true;
   }
+  const version = document.documentElement
+    ?.getAttribute("data-dwgeo-extension-version")
+    ?.trim();
+  if (version) window.__DWGEO_EXTENSION_VERSION__ = version;
 }
 
 function getExtensionRuntime(): ChromeRuntimeBridge | null {
   return window.chrome?.runtime ?? null;
 }
 
+function pageOrigin(): string {
+  return typeof window !== "undefined"
+    ? window.location.origin
+    : "http://127.0.0.1:3000";
+}
+
 function toAbsoluteUrl(src: string): string {
-  if (src.startsWith("http://") || src.startsWith("https://")) return src;
-  if (src.startsWith("//")) return `${window.location.protocol}${src}`;
-  if (src.startsWith("/")) return `${window.location.origin}${src}`;
-  return src;
+  return toAbsoluteMediaUrl(src, pageOrigin());
 }
 
 /** Make local /api/uploads and relative media absolute so extension can fetch+reupload. */
 function absolutizeContentMedia(html: string): string {
-  const origin =
-    typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:3000";
+  const origin = pageOrigin();
   return html.replace(
     /(\s(?:src|href|poster)=["'])([^"']+)(["'])/gi,
     (full, pre: string, url: string, post: string) => {
@@ -263,14 +293,11 @@ function absolutizeContentMedia(html: string): string {
         !s ||
         s.startsWith("data:") ||
         s.startsWith("blob:") ||
-        s.startsWith("#") ||
-        /^https?:\/\//i.test(s)
+        s.startsWith("#")
       ) {
         return full;
       }
-      if (s.startsWith("//")) return `${pre}${window.location.protocol}${s}${post}`;
-      if (s.startsWith("/")) return `${pre}${origin}${s}${post}`;
-      return `${pre}${origin}/${s.replace(/^\.\//, "")}${post}`;
+      return `${pre}${toAbsoluteMediaUrl(s, origin)}${post}`;
     },
   );
 }
@@ -285,8 +312,8 @@ function extractFirstImageUrl(html: string): string | undefined {
 }
 
 export function resolveArticleCover(article: DianwuGeoArticle): string | undefined {
-  const thumb = article.thumb?.trim();
-  if (thumb) return toAbsoluteUrl(thumb);
+  const explicit = article.cover?.trim() || article.thumb?.trim();
+  if (explicit) return toAbsoluteUrl(explicit);
   const fromBody = extractFirstImageUrl(article.content);
   if (fromBody) return fromBody;
   return undefined;
@@ -383,13 +410,8 @@ export async function pushDianwuGeoFamilyVariants(
 }
 
 function extensionMissingError() {
-  const host = typeof window !== "undefined" ? window.location.hostname : "";
-  const originHint =
-    host && host !== "localhost" && host !== "127.0.0.1"
-      ? `当前地址为 ${window.location.origin}，请改用 http://localhost:3000 打开编辑器。`
-      : "请用 http://localhost:3000 打开编辑器。";
   return new Error(
-    `未检测到${DIANWU_GEO_PRODUCT_NAME}。请在 Chrome 开发者模式加载 ${EXTENSION_DIR} 并重新加载扩展后重试（${originHint}）`,
+    `未检测到${DIANWU_GEO_PRODUCT_NAME}。请下载扩展包，在 Chrome 打开 chrome://extensions，开启开发者模式后加载解压文件夹，再刷新本页。`,
   );
 }
 
@@ -419,11 +441,19 @@ function attachReadyListener() {
       const payload = JSON.parse(evt.data) as {
         method?: string;
         extensionId?: string;
+        version?: string;
       };
       if (payload.method !== "dianwuGeoReady") return;
       window.__DWGEO_EXTENSION_INSTALLED__ = true;
       if (payload.extensionId) {
         window.__DWGEO_EXTENSION_ID__ = payload.extensionId;
+      }
+      if (payload.version) {
+        window.__DWGEO_EXTENSION_VERSION__ = payload.version;
+        document.documentElement?.setAttribute(
+          "data-dwgeo-extension-version",
+          payload.version,
+        );
       }
     } catch {
       // ignore
@@ -438,6 +468,7 @@ function attachReadyListener() {
       "data-dwgeo-extension",
       "data-dwgeo-extension-id",
       "data-dwgeo-inject-url",
+      "data-dwgeo-extension-version",
     ],
   });
 }
@@ -457,6 +488,7 @@ export async function waitForDianwuGeoExtension(maxWaitMs = 4_000): Promise<bool
 function sendExternalExtensionMessage<T>(
   message: Record<string, unknown>,
   timeoutMs = 6_000,
+  options?: { acceptFailure?: boolean },
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const extId = window.__DWGEO_EXTENSION_ID__;
@@ -479,7 +511,12 @@ function sendExternalExtensionMessage<T>(
           return;
         }
         const result = response as T & { success?: boolean; error?: string };
-        if (result && typeof result === "object" && result.success === false) {
+        if (
+          !options?.acceptFailure &&
+          result &&
+          typeof result === "object" &&
+          result.success === false
+        ) {
           reject(new Error(result.error || "打开扩展同步面板失败"));
           return;
         }
@@ -781,6 +818,7 @@ export async function addDianwuGeoTask(
       content: string;
       markdown?: string;
       thumb?: string;
+      cover?: string;
       desc?: string;
     };
     accounts: DianwuGeoAccount[];
@@ -795,12 +833,14 @@ export async function addDianwuGeoTask(
     throw extensionMissingError();
   }
 
+  const cover = task.post.cover || task.post.thumb;
   const post = {
     title: task.post.title,
     content: task.post.content,
     html: task.post.content,
     markdown: task.post.markdown || "",
-    thumb: task.post.thumb,
+    thumb: cover,
+    cover,
     desc: task.post.desc,
   };
 
@@ -1056,4 +1096,63 @@ export function isAccountTerminal(account: DianwuGeoAccount): boolean {
 export function isAccountSuccess(account: DianwuGeoAccount): boolean {
   const s = (account.status || "").toLowerCase();
   return s === "done" || s === "success";
+}
+
+export type DianwuGeoVideoPublishResult = {
+  success?: boolean;
+  error?: string;
+  postUrl?: string;
+  url?: string;
+  message?: string;
+  awaitingUserPublish?: boolean;
+  outcome?: string;
+  platform?: string;
+};
+
+export async function publishDouyinVideoViaExtension(input: {
+  videoUrl: string;
+  title: string;
+  description?: string;
+}): Promise<DianwuGeoVideoPublishResult> {
+  attachReadyListener();
+  if (!(await waitForDianwuGeoExtension(3_000))) {
+    throw extensionMissingError();
+  }
+  return sendExternalExtensionMessage<DianwuGeoVideoPublishResult>(
+    {
+      type: "PUBLISH_DOUYIN_VIDEO",
+      videoUrl: input.videoUrl,
+      title: input.title,
+      description: input.description || "",
+    },
+    4 * 60_000,
+    { acceptFailure: true },
+  );
+}
+
+export type DianwuGeoMusicPublishResult = DianwuGeoVideoPublishResult;
+
+export async function publishDouyinMusicViaExtension(input: {
+  audioUrl: string;
+  coverUrl?: string;
+  title: string;
+  lyrics?: string;
+  platform?: "qishui" | "douyin";
+}): Promise<DianwuGeoMusicPublishResult> {
+  attachReadyListener();
+  if (!(await waitForDianwuGeoExtension(3_000))) {
+    throw extensionMissingError();
+  }
+  return sendExternalExtensionMessage<DianwuGeoMusicPublishResult>(
+    {
+      type: "PUBLISH_DOUYIN_MUSIC",
+      audioUrl: input.audioUrl,
+      coverUrl: input.coverUrl || "",
+      title: input.title,
+      lyrics: input.lyrics || "",
+      platform: input.platform || "qishui",
+    },
+    4 * 60_000,
+    { acceptFailure: true },
+  );
 }

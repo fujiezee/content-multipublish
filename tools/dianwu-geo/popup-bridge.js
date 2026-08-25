@@ -1,3 +1,6 @@
+import { publishDouyinShortVideoViaExtension } from "./adapters/douyin-video.js";
+import { publishDouyinMusicViaExtension } from "./adapters/douyin-music.js";
+
 /** Open extension sync UI — popup window is reliable from web pages; toolbar openPopup needs a strict user gesture. */
 
 async function openSyncPageFallbackWindow(path = "", windowId) {
@@ -110,22 +113,27 @@ function replyAsync(handler, sendResponse) {
 async function injectPageBridge(tabId) {
   const extensionId = chrome.runtime.id;
   const injectUrl = chrome.runtime.getURL("inject-api.js");
+  const version = chrome.runtime.getManifest().version || "";
 
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (id, url) => {
+    func: (id, url, ver) => {
       window.__DWGEO_EXTENSION_INSTALLED__ = true;
       window.__DWGEO_EXTENSION_ID__ = id;
+      if (ver) window.__DWGEO_EXTENSION_VERSION__ = ver;
       document.documentElement?.setAttribute("data-dwgeo-extension-id", id);
       document.documentElement?.setAttribute("data-dwgeo-inject-url", url);
+      if (ver) {
+        document.documentElement?.setAttribute("data-dwgeo-extension-version", ver);
+      }
       if (!window.$syncer) {
         const script = document.createElement("script");
         script.src = url;
         document.documentElement.appendChild(script);
       }
     },
-    args: [extensionId, injectUrl],
+    args: [extensionId, injectUrl, version],
   });
 
   return { success: true, extensionId, injectUrl };
@@ -168,6 +176,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     replyAsync(() => handleSetFamilyVariants(message), sendResponse);
     return true;
   }
+  if (message.type === "PUBLISH_DOUYIN_VIDEO") {
+    replyAsync(
+      () => publishDouyinShortVideoViaExtension(message),
+      sendResponse,
+    );
+    return true;
+  }
+  if (message.type === "PUBLISH_DOUYIN_MUSIC") {
+    replyAsync(
+      () => publishDouyinMusicViaExtension(message),
+      sendResponse,
+    );
+    return true;
+  }
   if (message.type !== "OPEN_ACTION_POPUP") return;
   replyAsync(() => handleOpenActionPopupMessage(message, sender), sendResponse);
   return true;
@@ -200,6 +222,20 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   }
   if (message.type === "OPEN_ACTION_POPUP") {
     replyAsync(() => handleOpenActionPopupMessage(message, sender), sendResponse);
+    return true;
+  }
+  if (message.type === "PUBLISH_DOUYIN_VIDEO") {
+    replyAsync(
+      () => publishDouyinShortVideoViaExtension(message),
+      sendResponse,
+    );
+    return true;
+  }
+  if (message.type === "PUBLISH_DOUYIN_MUSIC") {
+    replyAsync(
+      () => publishDouyinMusicViaExtension(message),
+      sendResponse,
+    );
     return true;
   }
 });

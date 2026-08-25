@@ -5,6 +5,8 @@
  * 返回 success + awaitingUserPublish，SaaS 记为 filled_awaiting_publish（非失败）。
  */
 import { getCookieValue } from "./_cookie.js";
+import { assertPublicImageUrl, assertNoLocalImages } from "./_images.js";
+import { watchFillConfirmTab } from "./_fill-confirm-watch.js";
 
 const EDITOR_URL =
   "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article";
@@ -103,16 +105,7 @@ export function createXiaohongshuAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      // No public upload API — keep absolute/public CDN URLs for paste into editor.
-      if (
-        !src ||
-        src.startsWith("/api/uploads/") ||
-        /127\.0\.0\.1|localhost/i.test(src)
-      ) {
-        throw new Error(
-          "小红书需要公网图片地址，请先同步到 CDN（勿用本机 /api/uploads）",
-        );
-      }
+      assertPublicImageUrl(src, "小红书");
       return { url: src };
     }
 
@@ -268,7 +261,10 @@ export function createXiaohongshuAdapter(BaseAdapter) {
           ],
         });
 
-        return result || { ok: false, error: "DOM 填稿无结果" };
+        return {
+          ...(result || { ok: false, error: "DOM 填稿无结果" }),
+          tabId: tab.id,
+        };
       } catch (error) {
         return {
           ok: false,
@@ -292,8 +288,10 @@ export function createXiaohongshuAdapter(BaseAdapter) {
           {
             skipPatterns: ["xhscdn.com", "xiaohongshu.com", "sns-webpic"],
             onProgress: options?.onImageProgress,
+            allowPublicExternal: true,
           },
         );
+        assertNoLocalImages(content, "小红书");
 
         const dom = await this.fillViaDom(title, content);
         if (!dom.ok) {
@@ -302,6 +300,13 @@ export function createXiaohongshuAdapter(BaseAdapter) {
             draftOnly: true,
           });
         }
+
+        watchFillConfirmTab({
+          tabId: dom.tabId,
+          platform: "xiaohongshu",
+          isEditorUrl: (url) =>
+            /edith\.xiaohongshu|creator\.xiaohongshu/i.test(url),
+        });
 
         return this.createResult(true, {
           postUrl: dom.postUrl || EDITOR_URL,

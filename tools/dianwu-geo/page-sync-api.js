@@ -5,6 +5,54 @@
 
 const PRODUCT_TITLE = "点物GEO 文章多平台同步助手";
 const PENDING_ARTICLE_STORAGE_KEY = "dianwu-geo-pending-article";
+const CONTEXT_DEAD =
+  "扩展已更新，请刷新本页后再同步（重新加载扩展后必须刷新编辑器页）";
+
+function extensionAlive() {
+  try {
+    if (typeof chrome === "undefined" || !chrome.runtime) return false;
+    void chrome.runtime.id;
+    return typeof chrome.runtime.sendMessage === "function";
+  } catch {
+    return false;
+  }
+}
+
+function isContextDeadError(err) {
+  const msg = err instanceof Error ? err.message : String(err || "");
+  return /Extension context invalidated|context invalidated/i.test(msg);
+}
+
+function deadBridgeResult(method) {
+  if (method === "getAccounts" || method === "getSyncHistory") return [];
+  if (method === "getSyncState") return null;
+  return { success: false, error: CONTEXT_DEAD };
+}
+
+function replyDead(action) {
+  if (action?.eventID == null) return;
+  try {
+    sendToWindow({
+      eventID: action.eventID,
+      result: deadBridgeResult(action.method),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+/** Run chrome.* without throwing after the extension was reloaded. */
+function safeChromeCall(fn, onDead) {
+  try {
+    fn();
+  } catch (err) {
+    if (isContextDeadError(err)) {
+      onDead?.();
+      return;
+    }
+    throw err;
+  }
+}
 
 function isLocalEditorHost() {
   const host = window.location.hostname;
@@ -207,8 +255,10 @@ function updateAccountFromResult(result) {
   if (!account) return;
 
   account.status = result.success ? "done" : "failed";
-  account.error = result.error;
-  account.msg = undefined;
+  account.error = result.success ? undefined : result.error;
+  account.msg = result.success
+    ? result.message || (result.awaitingUserPublish ? "已填入，请确认后点发布" : undefined)
+    : undefined;
   account.editResp = result.success
     ? { draftLink: result.postUrl || result.url }
     : null;
@@ -222,6 +272,10 @@ function notifyAccountResult(result) {
     error: result.error,
     postUrl: result.postUrl || result.url,
     url: result.url || result.postUrl,
+    draftOnly: result.draftOnly,
+    awaitingUserPublish: result.awaitingUserPublish,
+    outcome: result.outcome,
+    message: result.message,
   });
 }
 
@@ -268,32 +322,38 @@ function failAllAccounts(error) {
 }
 
 // Progressive updates via storage (SYNC_PROGRESS does not reach content scripts)
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.activeSyncState) return;
-  const state = changes.activeSyncState.newValue;
-  if (!state || !Array.isArray(state.results)) return;
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    try {
+      if (!extensionAlive()) return;
+      if (area !== "local" || !changes.activeSyncState) return;
+      const state = changes.activeSyncState.newValue;
+      if (!state || !Array.isArray(state.results)) return;
 
-  if (currentSyncId || currentAccounts.length) {
-    applySyncResults(state.results, {
-      finalize: state.status === "completed",
-    });
-  } else if (state.status === "completed" && state.results.length) {
-    // Page reloaded mid-sync: still notify the editor page
-    for (const result of state.results) {
-      notifyPageSyncResult({
-        platform: result.platform,
-        success: !!result.success,
-        error: result.error,
-        postUrl: result.postUrl || result.url,
-        url: result.url || result.postUrl,
-      });
+      if (currentSyncId || currentAccounts.length) {
+        applySyncResults(state.results, {
+          finalize: state.status === "completed",
+        });
+      } else if (state.status === "completed" && state.results.length) {
+        for (const result of state.results) {
+          notifyAccountResult(result);
+        }
+      }
+
+      if (state.status === "completed") {
+        currentSyncId = null;
+      }
+    } catch (err) {
+      if (!isContextDeadError(err)) {
+        console.warn("[dianwu-geo] storage listener:", err);
+      }
     }
+  });
+} catch (err) {
+  if (!isContextDeadError(err)) {
+    console.warn("[dianwu-geo] storage listener bind:", err);
   }
-
-  if (state.status === "completed") {
-    currentSyncId = null;
-  }
-});
+}
 
 function buildPendingArticle(post) {
   const htmlContent = post.content || post.html || "";
@@ -323,8 +383,8 @@ function buildPendingArticle(post) {
 
 function pickArticleCover(post) {
   const raw =
-    post.thumb ||
     post.cover ||
+    post.thumb ||
     readEditorFieldValue("[data-dwgeo-article-cover]") ||
     undefined;
   if (!raw || String(raw).includes("article-placeholder")) return undefined;
@@ -374,65 +434,107 @@ function stashAndOpenExtensionActionPopup(pendingArticle, done, options = {}) {
       stamped.familyVariants && typeof stamped.familyVariants === "object"
         ? stamped.familyVariants
         : {};
-    // Clear recovered sync first so the popup won't stick to a previous article.
-    chrome.storage.local.remove("activeSyncState", () => {
-      chrome.storage.local.set(
-        {
-          pendingArticle: stamped,
-          dwgeoFamilyVariants: familyVariants,
-        },
-        () => {
-          if (chrome.runtime.lastError) {
-            console.warn(
-              "[dianwu-geo] stash pendingArticle:",
-              chrome.runtime.lastError,
-            );
-          }
-        },
-      );
-    });
+    if (extensionAlive()) {
+      chrome.storage.local.remove("activeSyncState", () => {
+        if (!extensionAlive()) return;
+        chrome.storage.local.set(
+          {
+            pendingArticle: stamped,
+            dwgeoFamilyVariants: familyVariants,
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              console.warn(
+                "[dianwu-geo] stash pendingArticle:",
+                chrome.runtime.lastError,
+              );
+            }
+          },
+        );
+      });
+    }
   } catch (err) {
-    console.warn("[dianwu-geo] stash pendingArticle failed:", err);
+    if (!isContextDeadError(err)) {
+      console.warn("[dianwu-geo] stash pendingArticle failed:", err);
+    }
   }
 
-  chrome.runtime.sendMessage(
-    {
-      type: "OPEN_ACTION_POPUP",
-      pendingArticle: stamped,
-      preferToolbarPopup: options?.preferToolbarPopup !== false,
-    },
-    (resp) => {
-      const runtimeError = chrome.runtime.lastError?.message;
-      if (runtimeError) {
-        finish({ success: false, error: runtimeError });
-        return;
-      }
-      if (!resp?.success) {
-        finish(
-          resp || { success: false, error: "无法打开同步面板，请重新加载扩展" },
-        );
-        return;
-      }
-      finish(resp);
-    },
-  );
+  if (!extensionAlive()) {
+    finish({ success: false, error: CONTEXT_DEAD });
+    return;
+  }
+
+  try {
+    chrome.runtime.sendMessage(
+      {
+        type: "OPEN_ACTION_POPUP",
+        pendingArticle: stamped,
+        preferToolbarPopup: options?.preferToolbarPopup !== false,
+      },
+      (resp) => {
+        try {
+          const runtimeError = chrome.runtime.lastError?.message;
+          if (runtimeError) {
+            finish({
+              success: false,
+              error: isContextDeadError(runtimeError)
+                ? CONTEXT_DEAD
+                : runtimeError,
+            });
+            return;
+          }
+          if (!resp?.success) {
+            finish(
+              resp || { success: false, error: "无法打开同步面板，请重新加载扩展" },
+            );
+            return;
+          }
+          finish(resp);
+        } catch (err) {
+          finish({
+            success: false,
+            error: isContextDeadError(err) ? CONTEXT_DEAD : String(err),
+          });
+        }
+      },
+    );
+  } catch (err) {
+    finish({
+      success: false,
+      error: isContextDeadError(err) ? CONTEXT_DEAD : String(err),
+    });
+  }
 }
 
 function mergeManualSyncSource(fromDom, fromSession) {
   if (!fromDom && !fromSession) return null;
   if (!fromDom) return fromSession;
   if (!fromSession) return fromDom;
+
+  const sessionHtml = fromSession.html || fromSession.content;
+  const domHtml = fromDom.html || fromDom.content;
+  const useSessionBody = Boolean(
+    fromSession._openedAt && sessionHtml?.trim(),
+  );
+  const html = useSessionBody
+    ? sessionHtml
+    : domHtml || sessionHtml;
+  const content = useSessionBody
+    ? fromSession.content || fromSession.html
+    : fromDom.content || fromDom.html || fromSession.content || fromSession.html;
+
   return {
     ...fromSession,
     ...fromDom,
     title: fromDom.title || fromSession.title,
-    html: fromDom.html || fromDom.content || fromSession.html || fromSession.content,
-    content: fromDom.content || fromDom.html || fromSession.content || fromSession.html,
+    html,
+    content,
     summary: fromDom.summary || fromDom.desc || fromSession.summary || fromSession.desc,
     desc: fromDom.desc || fromDom.summary || fromSession.desc || fromSession.summary,
-    cover: fromDom.cover || fromSession.cover,
+    cover: fromSession.cover || fromDom.cover,
+    thumb: fromSession.thumb || fromSession.cover || fromDom.thumb || fromDom.cover,
     familyVariants:
-      fromDom.familyVariants || fromSession.familyVariants || undefined,
+      fromSession.familyVariants || fromDom.familyVariants || undefined,
   };
 }
 
@@ -471,91 +573,122 @@ function handleManualSyncRequest() {
 
 document.addEventListener("dianwu-geo-request-sync", handleManualSyncRequest);
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === "EXTRACT_ARTICLE") {
-    const article = extractLocalEditorArticle();
-    if (article) {
-      sendResponse({ article });
-      return true;
-    }
-    return;
-  }
+try {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    try {
+      if (!extensionAlive()) return;
+      if (message.type === "EXTRACT_ARTICLE") {
+        const article = extractLocalEditorArticle();
+        if (article) {
+          sendResponse({ article });
+          return true;
+        }
+        return;
+      }
 
-  try {
-    if (message.syncId && currentSyncId && message.syncId !== currentSyncId) {
-      return;
-    }
+      if (message.syncId && currentSyncId && message.syncId !== currentSyncId) {
+        return;
+      }
 
-    if (message.method === "taskUpdate") {
-      sendToWindow({ task: message.task, method: "taskUpdate" });
-      return;
-    }
+      if (message.method === "taskUpdate") {
+        sendToWindow({ task: message.task, method: "taskUpdate" });
+        return;
+      }
 
-    if (message.type === "SYNC_PROGRESS") {
-      const result = message.result || message.payload?.result;
-      if (result) {
-        updateAccountFromResult(result);
+      if (message.type === "SYNC_PROGRESS") {
+        const result = message.result || message.payload?.result;
+        if (result) {
+          updateAccountFromResult(result);
+          sendTaskUpdate({ accounts: currentAccounts });
+          notifyPageSyncResult({
+            platform: result.platform,
+            success: !!result.success,
+            error: result.error,
+            postUrl: result.postUrl || result.url,
+            url: result.url || result.postUrl,
+            draftOnly: result.draftOnly,
+            awaitingUserPublish: result.awaitingUserPublish,
+            outcome: result.outcome,
+            message: result.message,
+          });
+        }
+      }
+
+      if (message.type === "SYNC_DETAIL_PROGRESS") {
+        const progress = message.payload || message;
+        const account = currentAccounts.find((a) => a.type === progress.platform);
+        if (account) {
+          account.status = "uploading";
+          account.msg =
+            progress.stage === "uploading_images"
+              ? `上传图片 ${progress.imageProgress?.current}/${progress.imageProgress?.total}`
+              : progress.stage === "saving"
+                ? "保存中..."
+                : progress.stage;
+        }
         sendTaskUpdate({ accounts: currentAccounts });
-        // Also notify page listeners (editor writes publish_jobs)
-        notifyPageSyncResult({
-          platform: result.platform,
-          success: !!result.success,
-          error: result.error,
-          postUrl: result.postUrl || result.url,
-          url: result.url || result.postUrl,
-        });
       }
-    }
 
-    if (message.type === "SYNC_DETAIL_PROGRESS") {
-      const progress = message.payload || message;
-      const account = currentAccounts.find((a) => a.type === progress.platform);
-      if (account) {
-        account.status = "uploading";
-        account.msg =
-          progress.stage === "uploading_images"
-            ? `上传图片 ${progress.imageProgress?.current}/${progress.imageProgress?.total}`
-            : progress.stage === "saving"
-              ? "保存中..."
-              : progress.stage;
-      }
-      sendTaskUpdate({ accounts: currentAccounts });
-    }
-
-    if (message.type === "SYNC_COMPLETED" || message.type === "SYNC_COMPLETE") {
-      const results =
-        message.results ||
-        message.payload?.results ||
-        message.payload?.data?.results;
-      if (Array.isArray(results) && results.length) {
-        applySyncResults(results, { finalize: true });
-        currentSyncId = null;
-      } else {
-        chrome.storage.local.get("activeSyncState", (data) => {
-          const state = data?.activeSyncState;
-          if (state?.results?.length) {
-            applySyncResults(state.results, { finalize: true });
-          }
+      if (message.type === "SYNC_COMPLETED" || message.type === "SYNC_COMPLETE") {
+        const results =
+          message.results ||
+          message.payload?.results ||
+          message.payload?.data?.results;
+        if (Array.isArray(results) && results.length) {
+          applySyncResults(results, { finalize: true });
           currentSyncId = null;
-        });
+        } else {
+          safeChromeCall(() => {
+            chrome.storage.local.get("activeSyncState", (data) => {
+              try {
+                if (!extensionAlive()) return;
+                const state = data?.activeSyncState;
+                if (state?.results?.length) {
+                  applySyncResults(state.results, { finalize: true });
+                }
+                currentSyncId = null;
+              } catch (err) {
+                if (!isContextDeadError(err)) throw err;
+              }
+            });
+          });
+        }
+      }
+    } catch (e) {
+      if (!isContextDeadError(e)) {
+        console.error("[dianwu-geo] page bridge message error:", e);
       }
     }
-  } catch (e) {
-    console.error("[dianwu-geo] page bridge message error:", e);
+  });
+} catch (err) {
+  if (!isContextDeadError(err)) {
+    console.warn("[dianwu-geo] onMessage bind:", err);
   }
-});
+}
 
 window.addEventListener("message", (evt) => {
   try {
     if (typeof evt.data !== "string") return;
     const action = JSON.parse(evt.data);
     routeBridgeAction(action);
-  } catch (_e) {
-    // ignore non-JSON messages
+  } catch (err) {
+    if (!isContextDeadError(err)) return;
   }
 });
 
 function routeBridgeAction(action) {
+  try {
+    routeBridgeActionInner(action);
+  } catch (err) {
+    if (isContextDeadError(err)) {
+      replyDead(action);
+      return;
+    }
+    console.warn("[dianwu-geo] routeBridgeAction:", err);
+  }
+}
+
+function routeBridgeActionInner(action) {
   if (!action || typeof action !== "object") return;
   if (!shouldHandleBridgeAction(action)) return;
 
@@ -565,20 +698,46 @@ function routeBridgeAction(action) {
   }
   if (!action.method) return;
 
+  if (!extensionAlive()) {
+    if (action.eventID != null) {
+      sendToWindow({
+        eventID: action.eventID,
+        result:
+          action.method === "getAccounts" ||
+          action.method === "getSyncHistory"
+            ? []
+            : action.method === "getSyncState"
+              ? null
+              : { success: false, error: CONTEXT_DEAD },
+      });
+    }
+    return;
+  }
+
   if (action.method === "getAccounts") {
-    chrome.runtime.sendMessage({ type: "CHECK_ALL_AUTH" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        console.error("[dianwu-geo] getAccounts:", chrome.runtime.lastError);
-        sendToWindow({ eventID: action.eventID, result: [] });
-        return;
-      }
-
-      const accounts = (resp?.platforms || [])
-        .filter((p) => p.isAuthenticated)
-        .map(mapPlatformToAccount);
-
-      sendToWindow({ eventID: action.eventID, result: accounts });
-    });
+    safeChromeCall(
+      () => {
+        chrome.runtime.sendMessage({ type: "CHECK_ALL_AUTH" }, (resp) => {
+          try {
+            if (chrome.runtime.lastError) {
+              sendToWindow({ eventID: action.eventID, result: [] });
+              return;
+            }
+            const accounts = (resp?.platforms || [])
+              .filter((p) => p.isAuthenticated)
+              .map(mapPlatformToAccount);
+            sendToWindow({ eventID: action.eventID, result: accounts });
+          } catch (err) {
+            if (isContextDeadError(err)) {
+              replyDead(action);
+              return;
+            }
+            throw err;
+          }
+        });
+      },
+      () => replyDead(action),
+    );
     return;
   }
 
@@ -592,45 +751,81 @@ function routeBridgeAction(action) {
       action.familyVariants && typeof action.familyVariants === "object"
         ? action.familyVariants
         : {};
-    chrome.runtime.sendMessage(
-      { type: "SET_FAMILY_VARIANTS", familyVariants },
+    safeChromeCall(
       () => {
-        if (chrome.runtime.lastError) {
-          console.warn(
-            "[dianwu-geo] setFamilyVariants:",
-            chrome.runtime.lastError.message,
-          );
-        }
-        if (action.eventID != null) {
-          sendToWindow({
-            eventID: action.eventID,
-            result: { success: true },
-          });
-        }
+        chrome.runtime.sendMessage(
+          { type: "SET_FAMILY_VARIANTS", familyVariants },
+          () => {
+            try {
+              if (chrome.runtime.lastError) {
+                console.warn(
+                  "[dianwu-geo] setFamilyVariants:",
+                  chrome.runtime.lastError.message,
+                );
+              }
+              if (action.eventID != null) {
+                sendToWindow({
+                  eventID: action.eventID,
+                  result: { success: true },
+                });
+              }
+            } catch (err) {
+              if (isContextDeadError(err)) {
+                replyDead(action);
+                return;
+              }
+              throw err;
+            }
+          },
+        );
       },
+      () => replyDead(action),
     );
     return;
   }
 
   if (action.method === "getSyncState") {
     // Same source as the popup "同步完成" UI — read storage directly.
-    chrome.storage.local.get("activeSyncState", (data) => {
-      sendToWindow({
-        eventID: action.eventID,
-        result: data?.activeSyncState || null,
-      });
-    });
+    safeChromeCall(
+      () => {
+        chrome.storage.local.get("activeSyncState", (data) => {
+          try {
+            if (!extensionAlive()) {
+              sendToWindow({ eventID: action.eventID, result: null });
+              return;
+            }
+            sendToWindow({
+              eventID: action.eventID,
+              result: data?.activeSyncState || null,
+            });
+          } catch (err) {
+            if (!isContextDeadError(err)) throw err;
+            sendToWindow({ eventID: action.eventID, result: null });
+          }
+        });
+      },
+      () => sendToWindow({ eventID: action.eventID, result: null }),
+    );
     return;
   }
 
   if (action.method === "getSyncHistory") {
-    // Same source as the popup「同步历史」page.
-    chrome.storage.local.get("syncHistory", (data) => {
-      sendToWindow({
-        eventID: action.eventID,
-        result: Array.isArray(data?.syncHistory) ? data.syncHistory : [],
-      });
-    });
+    safeChromeCall(
+      () => {
+        chrome.storage.local.get("syncHistory", (data) => {
+          try {
+            sendToWindow({
+              eventID: action.eventID,
+              result: Array.isArray(data?.syncHistory) ? data.syncHistory : [],
+            });
+          } catch (err) {
+            if (!isContextDeadError(err)) throw err;
+            sendToWindow({ eventID: action.eventID, result: [] });
+          }
+        });
+      },
+      () => sendToWindow({ eventID: action.eventID, result: [] }),
+    );
     return;
   }
 
@@ -701,7 +896,8 @@ function routeBridgeAction(action) {
           content: htmlContent,
           html: htmlContent,
           markdown: post.markdown || "",
-          cover: post.thumb || post.cover,
+          cover: post.cover || post.thumb,
+          thumb: post.cover || post.thumb,
         },
         platforms,
         skipHistory: true,
@@ -749,39 +945,76 @@ function routeBridgeAction(action) {
     };
 
     const readMatchingResults = (onMiss) => {
-      chrome.storage.local.get("activeSyncState", (data) => {
-        const state = data?.activeSyncState;
-        if (stateMatchesCurrent(state) && state?.results?.length) {
-          finish(state.results);
-        } else {
-          onMiss();
-        }
-      });
+      safeChromeCall(
+        () => {
+          chrome.storage.local.get("activeSyncState", (data) => {
+            try {
+              const state = data?.activeSyncState;
+              if (stateMatchesCurrent(state) && state?.results?.length) {
+                finish(state.results);
+              } else {
+                onMiss();
+              }
+            } catch (err) {
+              if (isContextDeadError(err)) {
+                finish([], CONTEXT_DEAD);
+                return;
+              }
+              throw err;
+            }
+          });
+        },
+        () => finish([], CONTEXT_DEAD),
+      );
     };
 
     // Drop stale "completed" snapshot so the editor poll cannot finalize the
     // wrong platforms before SYNC_ARTICLE writes the new syncing state.
-    chrome.storage.local.remove("activeSyncState", () => {
-      chrome.runtime.sendMessage(syncPayload, (resp) => {
-        if (chrome.runtime.lastError) {
-          const err = chrome.runtime.lastError.message || "扩展同步失败";
-          console.error("[dianwu-geo] addTask:", err);
-          readMatchingResults(() => finish([], err));
-          return;
-        }
-        if (resp?.error) {
-          readMatchingResults(() => finish([], String(resp.error)));
-          return;
-        }
+    safeChromeCall(
+      () => {
+        chrome.storage.local.remove("activeSyncState", () => {
+          try {
+            chrome.runtime.sendMessage(syncPayload, (resp) => {
+              try {
+                if (chrome.runtime.lastError) {
+                  const err = chrome.runtime.lastError.message || "扩展同步失败";
+                  const dead = isContextDeadError(err);
+                  if (!dead) console.error("[dianwu-geo] addTask:", err);
+                  readMatchingResults(() =>
+                    finish([], dead ? CONTEXT_DEAD : err),
+                  );
+                  return;
+                }
+                if (resp?.error) {
+                  readMatchingResults(() => finish([], String(resp.error)));
+                  return;
+                }
 
-        const fromResp = resp?.results;
-        if (Array.isArray(fromResp) && fromResp.length) {
-          finish(fromResp);
-          return;
-        }
-        readMatchingResults(() => finish([]));
-      });
-    });
+                const fromResp = resp?.results;
+                if (Array.isArray(fromResp) && fromResp.length) {
+                  finish(fromResp);
+                  return;
+                }
+                readMatchingResults(() => finish([]));
+              } catch (err) {
+                if (isContextDeadError(err)) {
+                  finish([], CONTEXT_DEAD);
+                  return;
+                }
+                throw err;
+              }
+            });
+          } catch (err) {
+            if (isContextDeadError(err)) {
+              finish([], CONTEXT_DEAD);
+              return;
+            }
+            throw err;
+          }
+        });
+      },
+      () => finish([], CONTEXT_DEAD),
+    );
     return;
   }
 
@@ -799,35 +1032,55 @@ function routeBridgeAction(action) {
 document.addEventListener(
   "dianwu-geo-bridge-request",
   (event) => {
-    const detail = event.detail;
-    if (!detail || typeof detail !== "object") return;
-    routeBridgeAction(detail);
+    try {
+      const detail = event.detail;
+      if (!detail || typeof detail !== "object") return;
+      routeBridgeAction(detail);
+    } catch (err) {
+      if (!isContextDeadError(err)) {
+        console.warn("[dianwu-geo] bridge-request:", err);
+      }
+    }
   },
   true,
 );
 
+function extensionVersion() {
+  try {
+    return chrome.runtime.getManifest().version || "";
+  } catch {
+    return "";
+  }
+}
+
 function announceExtensionReady() {
   try {
+    if (!extensionAlive()) return;
     sendToWindow({
       method: "dianwuGeoReady",
       extensionId: chrome.runtime.id,
+      version: extensionVersion(),
       result: { ok: true },
     });
   } catch (err) {
-    console.warn("[dianwu-geo] announce ready failed:", err);
+    if (!isContextDeadError(err)) {
+      console.warn("[dianwu-geo] announce ready failed:", err);
+    }
   }
 }
 
 function markExtensionOnDom(extensionId, injectUrl) {
   const root = document.documentElement;
   if (!root) return;
+  const version = extensionVersion();
   root.setAttribute("data-dwgeo-extension", "1");
   root.setAttribute("data-dwgeo-extension-id", extensionId);
   root.setAttribute("data-dwgeo-inject-url", injectUrl);
+  if (version) root.setAttribute("data-dwgeo-extension-version", version);
   try {
     document.dispatchEvent(
       new CustomEvent("dianwu-geo-init", {
-        detail: { extensionId, injectUrl },
+        detail: { extensionId, injectUrl, version },
       }),
     );
   } catch (err) {
@@ -857,17 +1110,31 @@ function injectViaScriptTag(injectUrl) {
 }
 
 function injectAPI() {
-  const extensionId = chrome.runtime.id;
-  const injectUrl = chrome.runtime.getURL("inject-api.js");
-  markExtensionOnDom(extensionId, injectUrl);
+  if (!extensionAlive()) return;
+  try {
+    const extensionId = chrome.runtime.id;
+    const injectUrl = chrome.runtime.getURL("inject-api.js");
+    markExtensionOnDom(extensionId, injectUrl);
 
-  chrome.runtime.sendMessage({ type: "INJECT_PAGE_BRIDGE" }, (resp) => {
-    if (chrome.runtime.lastError || !resp?.success) {
-      injectViaScriptTag(injectUrl);
-      return;
+    chrome.runtime.sendMessage({ type: "INJECT_PAGE_BRIDGE" }, (resp) => {
+      try {
+        if (!extensionAlive() || chrome.runtime.lastError || !resp?.success) {
+          injectViaScriptTag(injectUrl);
+          return;
+        }
+        announceExtensionReady();
+      } catch (err) {
+        if (!isContextDeadError(err)) {
+          console.warn("[dianwu-geo] inject callback:", err);
+        }
+        injectViaScriptTag(injectUrl);
+      }
+    });
+  } catch (err) {
+    if (!isContextDeadError(err)) {
+      console.warn("[dianwu-geo] injectAPI:", err);
     }
-    announceExtensionReady();
-  });
+  }
 }
 
 console.info("[dianwu-geo] content script active on", location.href);

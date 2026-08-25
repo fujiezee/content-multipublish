@@ -1,24 +1,39 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { getCloudflareDb } from "@/lib/db/cloudflare-sql";
 import { randomUUID } from "crypto";
-import { randomToken } from "@/lib/auth/password";
+import { randomToken, sha256 } from "@/lib/auth/password";
 import { DB_PATH, ensureDataDirs } from "@/lib/paths";
+import { MAX_SERIES_CAST } from "@/lib/ai/video-script-styles";
+import { parseAngles, parsePhotos } from "@/lib/ai/character-look";
+import { parsePodcastTurns } from "@/lib/ai/podcast-shared";
+import { DEFAULT_TTS_SPEECH_MODEL, resolveTtsSpeechModel } from "@/lib/ai/tts-voice-ids";
 import {
   ALL_PLATFORM_IDS,
   type Article,
   type ArticleInfographic,
+  type ArticlePodcast,
   type ArticleVideoEpisode,
   type ArticleVideoCharacter,
   type ArticleVideoSeries,
   type VideoSpeakMode,
   normalizeSpeakMode,
+  resolveInnerVoice,
   type CharacterCatalogItem,
   type CharacterSource,
   type StudioCharacter,
+  type StudioVoice,
   type VideoCatalogItem,
+  type MusicCatalogItem,
+  type PodcastCatalogItem,
+  type VideoCharacterAngle,
+  type VideoCharacterPhoto,
+  type VideoPublishJob,
+  type MusicPublishJob,
   type ArticleVariant,
   type VideoEpisodeStatus,
   type VideoScriptGenre,
   type CorpusItem,
+  type WriterAgent,
   type GeoKeyword,
   type GeoKeywordArticle,
   type GeoKeywordArticleWithTitle,
@@ -37,17 +52,54 @@ import {
   type VariantSource,
   normalizePublishEngine,
 } from "@/lib/types";
+import { shouldReplaceJobStatus } from "@/lib/job-status";
 import type { PaidOrder, PaidOrderItem, PaidOrderStatus } from "@/lib/paid-media";
 import { getPaidMediaSku } from "@/lib/paid-media";
 import type { PaidAdOrder, PaidAdOrderItem, PaidAdOrderStatus } from "@/lib/paid-ads";
 import { getPaidAdSku } from "@/lib/paid-ads";
+import {
+  parseCorpusAssets,
+  serializeCorpusAssets,
+} from "@/lib/corpus-assets";
+import {
+  countAiModels,
+  insertAiModelRow,
+  migrateAiModelCatalog,
+} from "@/lib/db/model-catalog";
+import { DEFAULT_AI_MODEL_SEED } from "@/lib/ai/model-catalog/seed";
+import {
+  createCatalogModel,
+  getCatalogModelById,
+  listCatalogModels,
+  removeCatalogModel,
+  seedAiModelCatalog,
+  syncProxyModelsIntoCatalog,
+  syncQwenModelsIntoCatalog,
+  syncArkModelsIntoCatalog,
+  syncCloudflareModelsIntoCatalog,
+  syncOfficialPricingIntoCatalog,
+  updateCatalogModel,
+} from "@/lib/ai/model-catalog/index";
+import type { AiModelInput, ListAiModelsQuery } from "@/lib/ai/model-catalog/types";
 
 let db: Database.Database | null = null;
+let cloudMigrated = false;
 
 function getDb() {
+  if (process.env.CLOUDFLARE === "1") {
+    const cloud = getCloudflareDb() as unknown as Database.Database;
+    if (!cloudMigrated) {
+      migrate(cloud);
+      cloudMigrated = true;
+    }
+    return cloud;
+  }
   if (db) return db;
   ensureDataDirs();
-  db = new Database(DB_PATH);
+  // Native module is local-only; Cloudflare uses sql.js.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const BetterSqlite = require("better-sqlite3") as typeof import("better-sqlite3");
+  db = new BetterSqlite(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   migrate(db);
@@ -91,6 +143,7 @@ function migrate(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_jobs_article ON publish_jobs(article_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON publish_jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_jobs_article_created ON publish_jobs(article_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS corpus_items (
       id TEXT PRIMARY KEY,
@@ -98,6 +151,7 @@ function migrate(database: Database.Database) {
       category TEXT NOT NULL DEFAULT 'other',
       tags TEXT NOT NULL DEFAULT '',
       content TEXT NOT NULL DEFAULT '',
+      assets_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -164,21 +218,53 @@ function migrate(database: Database.Database) {
   migrateGeoKeywordArticleLinks(database);
   migratePublishJobEngine(database);
   migrateAuthAndWorkspace(database);
+  migrateWorkspaceBilling(database);
   migrateArticleInfographics(database);
+  migrateArticlePodcasts(database);
   migrateArticleScriptTitle(database);
   migrateArticleVideoScripts(database);
+  migrateVideoEpisodeSubtitle(database);
+  migrateVideoEpisodeCaptions(database);
   migrateVideoSeriesCharacter(database);
   migrateVideoSeriesSpeak(database);
   migrateVideoSeriesHookStyle(database);
+  migrateVideoSeriesLookStyle(database);
+  migrateVideoSeriesProps(database);
+  migrateVideoSeriesWardrobe(database);
+  migrateVideoEpisodeDirector(database);
   migrateVideoSeriesCast(database);
+  migrateVideoSeriesPremise(database);
+  migrateVideoSeriesDuration(database);
+  migrateVideoSeriesMusic(database);
   migrateArticleVideoCharacters(database);
   migrateStudioCharacters(database);
   migrateStudioCharacterVoice(database);
+  migrateStudioCharacterLook(database);
+  migrateStudioVoices(database);
   migrateSeriesCharacterShare(database);
   migrateMentionTables(database);
   migratePaidPublish(database);
   migratePaidAds(database);
   migrateAgentDevices(database);
+  migrateVideoPublishJobs(database);
+  migrateMusicPublishJobs(database);
+  migrateCorpusAssets(database);
+  migrateWriterAgents(database);
+  migrateAiModelCatalog(database);
+  if (countAiModels(database) === 0) {
+    for (const item of DEFAULT_AI_MODEL_SEED) {
+      insertAiModelRow(database, item);
+    }
+  } else {
+    // 已有库：只补缺失 slug，不覆盖 Admin 改过的项
+    for (const item of DEFAULT_AI_MODEL_SEED) {
+      const existing = database
+        .prepare("SELECT id FROM ai_models WHERE slug = ?")
+        .get(item.slug) as { id?: string } | undefined;
+      if (existing?.id) continue;
+      insertAiModelRow(database, item);
+    }
+  }
   for (const table of [
     "corpus_items",
     "geo_keyword_mines",
@@ -186,6 +272,21 @@ function migrate(database: Database.Database) {
     "mention_settings",
   ] as const) {
     ensureOwnedByWorkspace(database, table);
+  }
+
+  try {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_articles_ws_updated
+        ON articles(workspace_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_corpus_ws_updated
+        ON corpus_items(workspace_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_geo_mines_ws_updated
+        ON geo_keyword_mines(workspace_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_mention_runs_ws_created
+        ON mention_runs(workspace_id, created_at DESC);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate workspace indexes:", err);
   }
 
   for (const platform of ALL_PLATFORM_IDS) {
@@ -211,6 +312,50 @@ export function listArticles(workspaceId?: string | null): Article[] {
   return getDb()
     .prepare("SELECT * FROM articles ORDER BY updated_at DESC")
     .all() as Article[];
+}
+
+/** 列表用：不含 body；支持 limit/offset 分页（多取 1 条判断 hasMore） */
+export function listArticleSummaries(
+  workspaceId?: string | null,
+  limit?: number,
+  offset = 0,
+): Article[] {
+  const capped =
+    typeof limit === "number" && limit > 0
+      ? Math.min(500, Math.floor(limit))
+      : null;
+  const off = Math.max(0, Math.floor(offset) || 0);
+  const sql = workspaceId
+    ? `SELECT id, title, summary, cover_path, script_title, workspace_id, created_at, updated_at
+       FROM articles
+       WHERE workspace_id = ?
+       ORDER BY updated_at DESC${capped != null ? " LIMIT ? OFFSET ?" : ""}`
+    : `SELECT id, title, summary, cover_path, script_title, workspace_id, created_at, updated_at
+       FROM articles
+       ORDER BY updated_at DESC${capped != null ? " LIMIT ? OFFSET ?" : ""}`;
+  const rows = (
+    workspaceId
+      ? capped != null
+        ? getDb().prepare(sql).all(workspaceId, capped, off)
+        : getDb().prepare(sql).all(workspaceId)
+      : capped != null
+        ? getDb().prepare(sql).all(capped, off)
+        : getDb().prepare(sql).all()
+  ) as Array<Omit<Article, "body">>;
+  return rows.map((row) => ({ ...row, body: "" }));
+}
+
+export function countArticles(workspaceId?: string | null): number {
+  if (workspaceId) {
+    const row = getDb()
+      .prepare(`SELECT COUNT(*) AS c FROM articles WHERE workspace_id = ?`)
+      .get(workspaceId) as { c: number };
+    return Number(row?.c) || 0;
+  }
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) AS c FROM articles`)
+    .get() as { c: number };
+  return Number(row?.c) || 0;
 }
 
 export function getArticle(id: string): Article | undefined {
@@ -353,6 +498,13 @@ export function deleteVariant(articleId: string, family: PlatformFamily) {
     .run(articleId, family);
 }
 
+/** 主稿改过后清空平台变体，避免同步仍发出旧变体。 */
+export function deleteArticleVariants(articleId: string) {
+  getDb()
+    .prepare(`DELETE FROM article_variants WHERE article_id = ?`)
+    .run(articleId);
+}
+
 export function deleteArticle(id: string) {
   getDb().prepare("DELETE FROM articles WHERE id = ?").run(id);
 }
@@ -437,9 +589,42 @@ export function listJobs(limit = 100): PublishJob[] {
   });
 }
 
-export function listJobsInWorkspace(workspaceId: string, limit = 100): PublishJob[] {
-  const ids = new Set(listArticles(workspaceId).map((a) => a.id));
-  return listJobs(limit).filter((job) => ids.has(job.article_id));
+export function listJobsInWorkspace(
+  workspaceId: string,
+  limit = 100,
+  offset = 0,
+): PublishJob[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT j.*
+       FROM publish_jobs j
+       INNER JOIN articles a ON a.id = j.article_id
+       WHERE a.workspace_id = ?
+       ORDER BY j.created_at DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(workspaceId, limit, Math.max(0, offset)) as PublishJob[];
+  return rows.flatMap((row) => {
+    const n = normalizeJob(row);
+    return n ? [n] : [];
+  });
+}
+
+export function countJobsByStatusInWorkspace(
+  workspaceId: string,
+): Record<string, number> {
+  const rows = getDb()
+    .prepare(
+      `SELECT j.status AS status, COUNT(*) AS c
+       FROM publish_jobs j
+       INNER JOIN articles a ON a.id = j.article_id
+       WHERE a.workspace_id = ?
+       GROUP BY j.status`,
+    )
+    .all(workspaceId) as Array<{ status: string; c: number }>;
+  const out: Record<string, number> = {};
+  for (const row of rows) out[row.status] = Number(row.c) || 0;
+  return out;
 }
 
 export function getJobInWorkspace(
@@ -474,6 +659,12 @@ export function updateJob(
 ) {
   const existing = getJob(id);
   if (!existing) return null;
+  if (
+    patch.status &&
+    !shouldReplaceJobStatus(existing.status, patch.status as JobStatus)
+  ) {
+    return existing;
+  }
   const next: PublishJob = {
     ...existing,
     ...patch,
@@ -498,8 +689,11 @@ export function listPendingJobs(): PublishJob[] {
   const rows = getDb()
     .prepare(
       `SELECT * FROM publish_jobs
-       WHERE status = 'pending'
-         AND (engine IS NULL OR engine = '' OR engine = 'playwright' OR engine = 'api')
+       WHERE (
+           status = 'pending'
+           AND (engine IS NULL OR engine = '' OR engine = 'playwright' OR engine = 'api')
+         )
+         OR (status = 'running' AND engine = 'api')
        ORDER BY created_at ASC`,
     )
     .all() as PublishJob[];
@@ -509,40 +703,71 @@ export function listPendingJobs(): PublishJob[] {
   });
 }
 
-export function listCorpusItems(workspaceId?: string | null): CorpusItem[] {
+export function listCorpusItems(
+  workspaceId?: string | null,
+  limit?: number,
+  offset = 0,
+): CorpusItem[] {
+  const capped =
+    typeof limit === "number" && limit > 0
+      ? Math.min(500, Math.floor(limit))
+      : null;
+  const off = Math.max(0, Math.floor(offset) || 0);
   if (workspaceId) {
-    return getDb()
-      .prepare(
-        `SELECT * FROM corpus_items
-         WHERE workspace_id = ?
-         ORDER BY updated_at DESC`,
-      )
-      .all(workspaceId) as CorpusItem[];
+    const sql =
+      capped != null
+        ? `SELECT * FROM corpus_items
+           WHERE workspace_id = ?
+           ORDER BY updated_at DESC
+           LIMIT ? OFFSET ?`
+        : `SELECT * FROM corpus_items
+           WHERE workspace_id = ?
+           ORDER BY updated_at DESC`;
+    const rows = (
+      capped != null
+        ? getDb().prepare(sql).all(workspaceId, capped, off)
+        : getDb().prepare(sql).all(workspaceId)
+    ) as Array<CorpusItem & { assets_json?: string }>;
+    return rows.map(normalizeCorpusItem);
   }
-  return getDb()
-    .prepare("SELECT * FROM corpus_items ORDER BY updated_at DESC")
-    .all() as CorpusItem[];
+  const sql =
+    capped != null
+      ? `SELECT * FROM corpus_items ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+      : `SELECT * FROM corpus_items ORDER BY updated_at DESC`;
+  const rows = (
+    capped != null
+      ? getDb().prepare(sql).all(capped, off)
+      : getDb().prepare(sql).all()
+  ) as Array<CorpusItem & { assets_json?: string }>;
+  return rows.map(normalizeCorpusItem);
 }
 
 export function getCorpusItem(id: string): CorpusItem | undefined {
-  return getDb().prepare("SELECT * FROM corpus_items WHERE id = ?").get(id) as
-    | CorpusItem
-    | undefined;
+  const row = getDb()
+    .prepare("SELECT * FROM corpus_items WHERE id = ?")
+    .get(id) as (CorpusItem & { assets_json?: string }) | undefined;
+  return row ? normalizeCorpusItem(row) : undefined;
 }
 
 export function createCorpusItem(item: CorpusItem, workspaceId = "ws_local") {
   getDb()
     .prepare(
       `INSERT INTO corpus_items
-       (id, title, category, tags, content, created_at, updated_at, workspace_id)
-       VALUES (@id, @title, @category, @tags, @content, @created_at, @updated_at, @workspace_id)`,
+       (id, title, category, tags, content, assets_json, created_at, updated_at, workspace_id)
+       VALUES (@id, @title, @category, @tags, @content, @assets_json, @created_at, @updated_at, @workspace_id)`,
     )
-    .run({ ...item, workspace_id: workspaceId });
+    .run({
+      ...item,
+      assets_json: serializeCorpusAssets(item.assets),
+      workspace_id: workspaceId,
+    });
 }
 
 export function updateCorpusItem(
   id: string,
-  patch: Partial<Pick<CorpusItem, "title" | "category" | "tags" | "content">>,
+  patch: Partial<
+    Pick<CorpusItem, "title" | "category" | "tags" | "content" | "assets">
+  >,
 ) {
   const existing = getCorpusItem(id);
   if (!existing) return null;
@@ -555,10 +780,13 @@ export function updateCorpusItem(
     .prepare(
       `UPDATE corpus_items
        SET title = @title, category = @category, tags = @tags,
-           content = @content, updated_at = @updated_at
+           content = @content, assets_json = @assets_json, updated_at = @updated_at
        WHERE id = @id`,
     )
-    .run(next);
+    .run({
+      ...next,
+      assets_json: serializeCorpusAssets(next.assets),
+    });
   return next;
 }
 
@@ -566,24 +794,99 @@ export function deleteCorpusItem(id: string) {
   getDb().prepare("DELETE FROM corpus_items WHERE id = ?").run(id);
 }
 
+export function listWriterAgents(workspaceId: string): WriterAgent[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM writer_agents
+       WHERE workspace_id = ?
+       ORDER BY updated_at DESC`,
+    )
+    .all(workspaceId) as WriterAgent[];
+}
+
+export function getWriterAgent(id: string): WriterAgent | undefined {
+  return getDb()
+    .prepare("SELECT * FROM writer_agents WHERE id = ?")
+    .get(id) as WriterAgent | undefined;
+}
+
+export function getWriterAgentInWorkspace(
+  id: string,
+  workspaceId: string,
+): WriterAgent | undefined {
+  const row = getWriterAgent(id);
+  return row && row.workspace_id === workspaceId ? row : undefined;
+}
+
+export function findWriterAgentBySeed(
+  workspaceId: string,
+  seed: string,
+): WriterAgent | undefined {
+  const key = seed.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!key) return undefined;
+  return listWriterAgents(workspaceId).find(
+    (row) =>
+      row.seed.replace(/\s+/g, " ").trim().toLowerCase() === key ||
+      row.name.replace(/\s+/g, " ").trim().toLowerCase() === key,
+  );
+}
+
+export function createWriterAgent(item: WriterAgent) {
+  getDb()
+    .prepare(
+      `INSERT INTO writer_agents
+       (id, workspace_id, name, seed, hint, instruction, created_at, updated_at)
+       VALUES (@id, @workspace_id, @name, @seed, @hint, @instruction, @created_at, @updated_at)`,
+    )
+    .run(item);
+}
+
+export function updateWriterAgent(
+  id: string,
+  patch: Partial<Pick<WriterAgent, "name" | "seed" | "hint" | "instruction">>,
+): WriterAgent | null {
+  const existing = getWriterAgent(id);
+  if (!existing) return null;
+  const next: WriterAgent = {
+    ...existing,
+    ...patch,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE writer_agents
+       SET name = @name, seed = @seed, hint = @hint,
+           instruction = @instruction, updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run(next);
+  return next;
+}
+
+export function deleteWriterAgent(id: string) {
+  getDb().prepare("DELETE FROM writer_agents WHERE id = ?").run(id);
+}
+
 export function listGeoMines(
   limit = 50,
   workspaceId?: string | null,
+  offset = 0,
 ): GeoKeywordMine[] {
+  const off = Math.max(0, Math.floor(offset) || 0);
   if (workspaceId) {
     return getDb()
       .prepare(
         `SELECT * FROM geo_keyword_mines
          WHERE workspace_id = ?
-         ORDER BY updated_at DESC LIMIT ?`,
+         ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
       )
-      .all(workspaceId, limit) as GeoKeywordMine[];
+      .all(workspaceId, limit, off) as GeoKeywordMine[];
   }
   return getDb()
     .prepare(
-      `SELECT * FROM geo_keyword_mines ORDER BY updated_at DESC LIMIT ?`,
+      `SELECT * FROM geo_keyword_mines ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(limit) as GeoKeywordMine[];
+    .all(limit, off) as GeoKeywordMine[];
 }
 
 export function getGeoMine(id: string): GeoKeywordMine | undefined {
@@ -622,12 +925,45 @@ export function listGeoKeywordsByMine(mineId: string): GeoKeyword[] {
     .all(mineId) as GeoKeyword[];
 }
 
-export function listAllGeoNormKeys(): string[] {
+export function listAllGeoNormKeys(workspaceId?: string | null): string[] {
+  if (workspaceId) {
+    return (
+      getDb()
+        .prepare(
+          `SELECT k.norm_key
+           FROM geo_keywords k
+           INNER JOIN geo_keyword_mines m ON m.id = k.mine_id
+           WHERE m.workspace_id = ?`,
+        )
+        .all(workspaceId) as { norm_key: string }[]
+    ).map((row) => row.norm_key);
+  }
   return (
     getDb()
       .prepare("SELECT norm_key FROM geo_keywords")
       .all() as { norm_key: string }[]
   ).map((row) => row.norm_key);
+}
+
+export function countGeoKeywordsGrouped(
+  mineIds: string[],
+): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!mineIds.length) return out;
+  const placeholders = mineIds.map(() => "?").join(",");
+  const rows = getDb()
+    .prepare(
+      `SELECT mine_id, COUNT(*) AS c
+       FROM geo_keywords
+       WHERE mine_id IN (${placeholders})
+       GROUP BY mine_id`,
+    )
+    .all(...mineIds) as Array<{ mine_id: string; c: number }>;
+  for (const row of rows) out.set(row.mine_id, Number(row.c) || 0);
+  for (const id of mineIds) {
+    if (!out.has(id)) out.set(id, 0);
+  }
+  return out;
 }
 
 export function insertGeoKeywords(keywords: GeoKeyword[]) {
@@ -766,8 +1102,132 @@ function migrateAuthAndWorkspace(database: Database.Database) {
          WHERE workspace_id IS NULL OR workspace_id = ''`,
       )
       .run();
+
+    const userCols = database
+      .prepare(`PRAGMA table_info(workspace_users)`)
+      .all() as { name: string }[];
+    if (!userCols.some((c) => c.name === "email_verified_at")) {
+      database.exec(
+        `ALTER TABLE workspace_users ADD COLUMN email_verified_at TEXT`,
+      );
+      database.exec(
+        `UPDATE workspace_users
+         SET email_verified_at = created_at
+         WHERE email_verified_at IS NULL`,
+      );
+    }
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS email_verify_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES workspace_users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_email_verify_tokens_user
+        ON email_verify_tokens(user_id);
+    `);
   } catch (err) {
     console.warn("[db] migrate auth/workspace:", err);
+  }
+}
+
+function migrateWorkspaceBilling(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_billing (
+        workspace_id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL DEFAULT 'trial',
+        extra_articles INTEGER NOT NULL DEFAULT 0,
+        extra_images INTEGER NOT NULL DEFAULT 0,
+        extra_mentions INTEGER NOT NULL DEFAULT 0,
+        extra_video_seconds INTEGER NOT NULL DEFAULT 0,
+        wallet_fen INTEGER NOT NULL DEFAULT 0,
+        used_articles INTEGER NOT NULL DEFAULT 0,
+        used_images INTEGER NOT NULL DEFAULT 0,
+        used_mentions INTEGER NOT NULL DEFAULT 0,
+        used_video_seconds INTEGER NOT NULL DEFAULT 0,
+        cap_articles INTEGER,
+        cap_images INTEGER,
+        cap_mentions INTEGER,
+        cap_video_seconds INTEGER,
+        period_start TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS billing_adjustments (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        actor_email TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_billing_adjustments_ws
+        ON billing_adjustments(workspace_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS billing_orders (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        actor_email TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        interval TEXT NOT NULL DEFAULT 'once',
+        amount_yuan INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        paid_at TEXT,
+        stripe_session_id TEXT,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_billing_orders_ws
+        ON billing_orders(workspace_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS billing_usage (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        actor_email TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        amount INTEGER NOT NULL DEFAULT 0,
+        from_included INTEGER NOT NULL DEFAULT 0,
+        from_wallet INTEGER NOT NULL DEFAULT 0,
+        wallet_fen INTEGER NOT NULL DEFAULT 0,
+        meter TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_billing_usage_ws
+        ON billing_usage(workspace_id, created_at);
+    `);
+    try {
+      database.exec(
+        `ALTER TABLE billing_orders ADD COLUMN stripe_session_id TEXT`,
+      );
+    } catch {
+      /* already exists */
+    }
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_billing_orders_stripe
+        ON billing_orders(stripe_session_id);
+    `);
+    try {
+      database.exec(
+        `ALTER TABLE workspace_billing ADD COLUMN wallet_fen INTEGER NOT NULL DEFAULT 0`,
+      );
+    } catch {
+      /* already exists */
+    }
+  } catch (err) {
+    console.warn("[db] migrate workspace billing:", err);
   }
 }
 
@@ -924,6 +1384,91 @@ function migrateAgentDevices(database: Database.Database) {
   }
 }
 
+function migrateWriterAgents(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS writer_agents (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        seed TEXT NOT NULL DEFAULT '',
+        hint TEXT NOT NULL DEFAULT '',
+        instruction TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_writer_agents_ws
+        ON writer_agents(workspace_id, updated_at);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate writer agents:", err);
+  }
+}
+
+function migrateCorpusAssets(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(corpus_items)`)
+      .all() as { name: string }[];
+    if (!cols.some((c) => c.name === "assets_json")) {
+      database.exec(
+        `ALTER TABLE corpus_items ADD COLUMN assets_json TEXT NOT NULL DEFAULT '[]'`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate corpus assets:", err);
+  }
+}
+
+function normalizeCorpusItem(
+  row: CorpusItem & { assets_json?: string | null },
+): CorpusItem {
+  const { assets_json, ...rest } = row;
+  return {
+    ...rest,
+    assets: parseCorpusAssets(assets_json ?? rest.assets),
+  };
+}
+
+function migrateArticlePodcasts(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS article_podcasts (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL DEFAULT '',
+        mode TEXT NOT NULL DEFAULT 'dialogue',
+        host_voice TEXT NOT NULL DEFAULT '',
+        guest_voice TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'idle',
+        error TEXT,
+        audio_url TEXT,
+        cover_url TEXT,
+        duration_sec INTEGER NOT NULL DEFAULT 0,
+        turns_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_article_podcasts_article
+        ON article_podcasts(article_id);
+    `);
+    const cols = database
+      .prepare(`PRAGMA table_info(article_podcasts)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "cover_url")) {
+      database.exec(`ALTER TABLE article_podcasts ADD COLUMN cover_url TEXT`);
+    }
+    if (!cols.some((c) => c.name === "tts_model")) {
+      database.exec(
+        `ALTER TABLE article_podcasts ADD COLUMN tts_model TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate article_podcasts:", err);
+  }
+}
+
 function migrateArticleInfographics(database: Database.Database) {
   try {
     database.exec(`
@@ -1009,6 +1554,56 @@ function migrateArticleScriptTitle(database: Database.Database) {
   }
 }
 
+function migrateVideoSeriesMusic(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_series)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "lyrics")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN lyrics TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+    if (!cols.some((c) => c.name === "music_json")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN music_json TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video series music:", err);
+  }
+}
+
+function migrateVideoSeriesDuration(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_series)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "duration_sec")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN duration_sec INTEGER NOT NULL DEFAULT 0`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video series duration:", err);
+  }
+}
+
+function migrateVideoSeriesPremise(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_series)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "premise")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN premise TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video series premise:", err);
+  }
+}
+
 function migrateVideoSeriesHookStyle(database: Database.Database) {
   try {
     const cols = database
@@ -1032,6 +1627,66 @@ function migrateVideoSeriesHookStyle(database: Database.Database) {
   }
 }
 
+function migrateVideoSeriesLookStyle(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_series)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "look_style")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN look_style TEXT NOT NULL DEFAULT 'semi'`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video series look_style:", err);
+  }
+}
+
+function migrateVideoSeriesWardrobe(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_series)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "wardrobe_json")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN wardrobe_json TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video series wardrobe_json:", err);
+  }
+}
+
+function migrateVideoEpisodeDirector(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_episodes)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "director_json")) {
+      database.exec(
+        `ALTER TABLE article_video_episodes ADD COLUMN director_json TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video episode director_json:", err);
+  }
+}
+
+function migrateVideoSeriesProps(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_series)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "props_json")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN props_json TEXT NOT NULL DEFAULT '[]'`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video series props_json:", err);
+  }
+}
+
 function migrateVideoSeriesSpeak(database: Database.Database) {
   try {
     const cols = database
@@ -1045,6 +1700,11 @@ function migrateVideoSeriesSpeak(database: Database.Database) {
     if (!cols.some((c) => c.name === "voice_id")) {
       database.exec(
         `ALTER TABLE article_video_series ADD COLUMN voice_id TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+    if (!cols.some((c) => c.name === "inner_voice")) {
+      database.exec(
+        `ALTER TABLE article_video_series ADD COLUMN inner_voice TEXT NOT NULL DEFAULT 'off'`,
       );
     }
   } catch (err) {
@@ -1078,6 +1738,95 @@ function migrateVideoSeriesCast(database: Database.Database) {
     }
   } catch (err) {
     console.warn("[db] migrate video series cast:", err);
+  }
+}
+
+function migrateVideoEpisodeCaptions(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_episodes)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "source_video_url")) {
+      database.exec(`ALTER TABLE article_video_episodes ADD COLUMN source_video_url TEXT`);
+    }
+    if (!cols.some((c) => c.name === "caption_style_json")) {
+      database.exec(
+        `ALTER TABLE article_video_episodes ADD COLUMN caption_style_json TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+    if (!cols.some((c) => c.name === "caption_cues_json")) {
+      database.exec(
+        `ALTER TABLE article_video_episodes ADD COLUMN caption_cues_json TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate video episode captions:", err);
+  }
+}
+
+function migrateVideoEpisodeSubtitle(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(article_video_episodes)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "subtitle_url")) {
+      database.exec(`ALTER TABLE article_video_episodes ADD COLUMN subtitle_url TEXT`);
+    }
+  } catch (err) {
+    console.warn("[db] migrate video episode subtitle:", err);
+  }
+}
+
+function migrateVideoPublishJobs(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS video_publish_jobs (
+        id TEXT PRIMARY KEY,
+        episode_id TEXT NOT NULL,
+        article_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        result_url TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (episode_id) REFERENCES article_video_episodes(id) ON DELETE CASCADE,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_video_publish_jobs_created
+        ON video_publish_jobs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_video_publish_jobs_episode
+        ON video_publish_jobs(episode_id);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate video publish jobs:", err);
+  }
+}
+
+function migrateMusicPublishJobs(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS music_publish_jobs (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL,
+        series_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        result_url TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+        FOREIGN KEY (series_id) REFERENCES article_video_series(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_music_publish_jobs_created
+        ON music_publish_jobs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_music_publish_jobs_article
+        ON music_publish_jobs(article_id);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate music publish jobs:", err);
   }
 }
 
@@ -1187,6 +1936,46 @@ function migrateStudioCharacterVoice(database: Database.Database) {
   }
 }
 
+function migrateStudioCharacterLook(database: Database.Database) {
+  try {
+    const cols = database
+      .prepare(`PRAGMA table_info(studio_characters)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "look")) {
+      database.exec(
+        `ALTER TABLE studio_characters ADD COLUMN look TEXT NOT NULL DEFAULT ''`,
+      );
+    }
+  } catch (err) {
+    console.warn("[db] migrate studio character look:", err);
+  }
+}
+
+function migrateStudioVoices(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS studio_voices (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        hint TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL DEFAULT 'qwen',
+        provider_voice_id TEXT NOT NULL DEFAULT '',
+        provider_model TEXT NOT NULL DEFAULT '',
+        sample_url TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_studio_voices_ws
+        ON studio_voices(workspace_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_studio_voices_provider
+        ON studio_voices(provider_voice_id);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate studio_voices:", err);
+  }
+}
+
 function migrateSeriesCharacterShare(database: Database.Database) {
   try {
     database.exec(`
@@ -1266,6 +2055,686 @@ export function createWorkspace(name: string): { id: string; name: string } {
   return { id: row.id, name: row.name };
 }
 
+export type WorkspaceBillingRow = {
+  workspace_id: string;
+  plan_id: string;
+  extra_articles: number;
+  extra_images: number;
+  extra_mentions: number;
+  extra_video_seconds: number;
+  wallet_fen: number;
+  used_articles: number;
+  used_images: number;
+  used_mentions: number;
+  used_video_seconds: number;
+  cap_articles: number | null;
+  cap_images: number | null;
+  cap_mentions: number | null;
+  cap_video_seconds: number | null;
+  period_start: string;
+  note: string;
+  updated_at: string;
+};
+
+export type BillingQuotaField =
+  | "articles"
+  | "images"
+  | "mentions"
+  | "video_seconds";
+
+export function currentBillingPeriodStart(now = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}-01`;
+}
+
+export function getWorkspace(id: string) {
+  return getDb()
+    .prepare(`SELECT id, name, created_at FROM workspaces WHERE id = ?`)
+    .get(id) as { id: string; name: string; created_at: string } | undefined;
+}
+
+function defaultBillingRow(workspaceId: string): WorkspaceBillingRow {
+  const now = new Date().toISOString();
+  return {
+    workspace_id: workspaceId,
+    plan_id: "trial",
+    extra_articles: 0,
+    extra_images: 0,
+    extra_mentions: 0,
+    extra_video_seconds: 0,
+    wallet_fen: 0,
+    used_articles: 0,
+    used_images: 0,
+    used_mentions: 0,
+    used_video_seconds: 0,
+    cap_articles: null,
+    cap_images: null,
+    cap_mentions: null,
+    cap_video_seconds: null,
+    period_start: currentBillingPeriodStart(),
+    note: "",
+    updated_at: now,
+  };
+}
+
+function readBillingRow(workspaceId: string): WorkspaceBillingRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM workspace_billing WHERE workspace_id = ?`)
+    .get(workspaceId) as WorkspaceBillingRow | undefined;
+}
+
+export function getOrCreateWorkspaceBilling(
+  workspaceId: string,
+): WorkspaceBillingRow {
+  const db = getDb();
+  return db.transaction(() => {
+    let row = readBillingRow(workspaceId);
+    if (!row) {
+      row = defaultBillingRow(workspaceId);
+      db.prepare(
+        `INSERT INTO workspace_billing (
+           workspace_id, plan_id,
+           extra_articles, extra_images, extra_mentions, extra_video_seconds, wallet_fen,
+           used_articles, used_images, used_mentions, used_video_seconds,
+           cap_articles, cap_images, cap_mentions, cap_video_seconds,
+           period_start, note, updated_at
+         ) VALUES (
+           @workspace_id, @plan_id,
+           @extra_articles, @extra_images, @extra_mentions, @extra_video_seconds, @wallet_fen,
+           @used_articles, @used_images, @used_mentions, @used_video_seconds,
+           @cap_articles, @cap_images, @cap_mentions, @cap_video_seconds,
+           @period_start, @note, @updated_at
+         )`,
+      ).run(row);
+    }
+    const period = currentBillingPeriodStart();
+    if (row.period_start !== period) {
+      db.prepare(
+        `UPDATE workspace_billing
+         SET used_articles = 0,
+             used_images = 0,
+             used_mentions = 0,
+             used_video_seconds = 0,
+             period_start = @period_start,
+             updated_at = @updated_at
+         WHERE workspace_id = @workspace_id`,
+      ).run({
+        workspace_id: workspaceId,
+        period_start: period,
+        updated_at: new Date().toISOString(),
+      });
+      row = readBillingRow(workspaceId) ?? { ...row, period_start: period };
+    }
+    return row;
+  })();
+}
+
+export function updateWorkspaceBilling(
+  workspaceId: string,
+  patch: Partial<
+    Omit<WorkspaceBillingRow, "workspace_id">
+  >,
+): WorkspaceBillingRow {
+  const current = getOrCreateWorkspaceBilling(workspaceId);
+  const next: WorkspaceBillingRow = {
+    ...current,
+    ...patch,
+    workspace_id: workspaceId,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE workspace_billing
+       SET plan_id = @plan_id,
+           extra_articles = @extra_articles,
+           extra_images = @extra_images,
+           extra_mentions = @extra_mentions,
+           extra_video_seconds = @extra_video_seconds,
+           wallet_fen = @wallet_fen,
+           used_articles = @used_articles,
+           used_images = @used_images,
+           used_mentions = @used_mentions,
+           used_video_seconds = @used_video_seconds,
+           cap_articles = @cap_articles,
+           cap_images = @cap_images,
+           cap_mentions = @cap_mentions,
+           cap_video_seconds = @cap_video_seconds,
+           period_start = @period_start,
+           note = @note,
+           updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    )
+    .run(next);
+  return next;
+}
+
+function usedColumn(field: BillingQuotaField): string {
+  return `used_${field}`;
+}
+
+export type BillingUsageActor = {
+  email?: string;
+  meter?: string | null;
+};
+
+export type BillingUsageRow = {
+  id: string;
+  workspace_id: string;
+  actor_email: string;
+  kind: string;
+  label: string;
+  amount: number;
+  from_included: number;
+  from_wallet: number;
+  wallet_fen: number;
+  meter: string;
+  created_at: string;
+};
+
+const USAGE_KIND: Record<BillingQuotaField, { kind: string; label: string }> = {
+  articles: { kind: "articles", label: "文章" },
+  images: { kind: "images", label: "配图" },
+  mentions: { kind: "mentions", label: "查排名" },
+  video_seconds: { kind: "videoSeconds", label: "视频" },
+};
+
+function writeBillingUsage(
+  database: Database.Database,
+  input: {
+    workspaceId: string;
+    field: BillingQuotaField;
+    amount: number;
+    fromIncluded: number;
+    fromWallet: number;
+    walletFen: number;
+    actor?: BillingUsageActor;
+  },
+) {
+  if (
+    input.amount === 0 &&
+    input.fromIncluded === 0 &&
+    input.fromWallet === 0 &&
+    input.walletFen === 0
+  ) {
+    return;
+  }
+  const meta = USAGE_KIND[input.field];
+  database
+    .prepare(
+      `INSERT INTO billing_usage (
+         id, workspace_id, actor_email, kind, label,
+         amount, from_included, from_wallet, wallet_fen, meter, created_at
+       ) VALUES (
+         @id, @workspace_id, @actor_email, @kind, @label,
+         @amount, @from_included, @from_wallet, @wallet_fen, @meter, @created_at
+       )`,
+    )
+    .run({
+      id: randomUUID(),
+      workspace_id: input.workspaceId,
+      actor_email: (input.actor?.email || "").trim(),
+      kind: meta.kind,
+      label: meta.label,
+      amount: input.amount,
+      from_included: input.fromIncluded,
+      from_wallet: input.fromWallet,
+      wallet_fen: input.walletFen,
+      meter: (input.actor?.meter || "").trim(),
+      created_at: new Date().toISOString(),
+    });
+}
+
+export function listBillingUsage(
+  workspaceId: string,
+  opts?: { limit?: number; walletOnly?: boolean },
+): BillingUsageRow[] {
+  const limit = Math.min(200, Math.max(1, Math.floor(opts?.limit ?? 40)));
+  if (opts?.walletOnly) {
+    return getDb()
+      .prepare(
+        `SELECT * FROM billing_usage
+         WHERE workspace_id = ? AND wallet_fen != 0
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(workspaceId, limit) as BillingUsageRow[];
+  }
+  return getDb()
+    .prepare(
+      `SELECT * FROM billing_usage
+       WHERE workspace_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    )
+    .all(workspaceId, limit) as BillingUsageRow[];
+}
+
+export function consumeWorkspaceQuota(
+  workspaceId: string,
+  field: BillingQuotaField,
+  amount: number,
+  cap: number | "unlimited",
+  actor?: BillingUsageActor,
+): boolean {
+  if (amount <= 0) return true;
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getOrCreateWorkspaceBilling(workspaceId);
+    const used = Number(row[usedColumn(field) as keyof WorkspaceBillingRow] ?? 0);
+    if (cap !== "unlimited" && used + amount > cap) return false;
+    db.prepare(
+      `UPDATE workspace_billing
+       SET ${usedColumn(field)} = ${usedColumn(field)} + @amount,
+           updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    ).run({
+      workspace_id: workspaceId,
+      amount,
+      updated_at: new Date().toISOString(),
+    });
+    writeBillingUsage(db, {
+      workspaceId,
+      field,
+      amount,
+      fromIncluded: amount,
+      fromWallet: 0,
+      walletFen: 0,
+      actor,
+    });
+    return true;
+  })();
+}
+
+export function refundWorkspaceQuota(
+  workspaceId: string,
+  field: BillingQuotaField,
+  amount: number,
+  actor?: BillingUsageActor,
+) {
+  if (amount <= 0) return;
+  const db = getDb();
+  db.transaction(() => {
+    getOrCreateWorkspaceBilling(workspaceId);
+    db.prepare(
+      `UPDATE workspace_billing
+       SET ${usedColumn(field)} = MAX(0, ${usedColumn(field)} - @amount),
+           updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    ).run({
+      workspace_id: workspaceId,
+      amount,
+      updated_at: new Date().toISOString(),
+    });
+    writeBillingUsage(db, {
+      workspaceId,
+      field,
+      amount: -amount,
+      fromIncluded: -amount,
+      fromWallet: 0,
+      walletFen: 0,
+      actor,
+    });
+  })();
+}
+
+export function addWalletFen(workspaceId: string, fen: number): number {
+  const amount = Math.round(fen);
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getOrCreateWorkspaceBilling(workspaceId);
+    const next = Math.max(0, Number(row.wallet_fen ?? 0) + amount);
+    db.prepare(
+      `UPDATE workspace_billing
+       SET wallet_fen = @wallet_fen, updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    ).run({
+      workspace_id: workspaceId,
+      wallet_fen: next,
+      updated_at: new Date().toISOString(),
+    });
+    return next;
+  })();
+}
+
+/**
+ * 钱包直扣（API 文本 / 音乐等）。成功返回剩余余额；余额不足返回 null。
+ * fen > 0 扣款；fen < 0 退款。
+ */
+export function debitWalletFen(
+  workspaceId: string,
+  fen: number,
+  meta: {
+    kind: string;
+    label: string;
+    meter?: string | null;
+    email?: string;
+  },
+): number | null {
+  const cost = Math.round(fen);
+  if (cost === 0) return getOrCreateWorkspaceBilling(workspaceId).wallet_fen;
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getOrCreateWorkspaceBilling(workspaceId);
+    const wallet = Number(row.wallet_fen ?? 0);
+    if (cost > 0 && wallet < cost) return null;
+    const next = Math.max(0, wallet - cost);
+    db.prepare(
+      `UPDATE workspace_billing
+       SET wallet_fen = @wallet_fen, updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    ).run({
+      workspace_id: workspaceId,
+      wallet_fen: next,
+      updated_at: new Date().toISOString(),
+    });
+    db.prepare(
+      `INSERT INTO billing_usage (
+         id, workspace_id, actor_email, kind, label,
+         amount, from_included, from_wallet, wallet_fen, meter, created_at
+       ) VALUES (
+         @id, @workspace_id, @actor_email, @kind, @label,
+         @amount, @from_included, @from_wallet, @wallet_fen, @meter, @created_at
+       )`,
+    ).run({
+      id: randomUUID(),
+      workspace_id: workspaceId,
+      actor_email: (meta.email || "").trim(),
+      kind: meta.kind,
+      label: meta.label,
+      amount: cost > 0 ? 1 : -1,
+      from_included: 0,
+      from_wallet: cost > 0 ? 1 : -1,
+      wallet_fen: cost,
+      meter: (meta.meter || "").trim(),
+      created_at: new Date().toISOString(),
+    });
+    return next;
+  })();
+}
+
+export function consumeMeteredUsage(
+  workspaceId: string,
+  field: BillingQuotaField,
+  amount: number,
+  cap: number | "unlimited",
+  unitFen: number,
+  actor?: BillingUsageActor,
+): boolean {
+  if (amount <= 0) return true;
+  const db = getDb();
+  return db.transaction(() => {
+    const row = getOrCreateWorkspaceBilling(workspaceId);
+    const used = Number(row[usedColumn(field) as keyof WorkspaceBillingRow] ?? 0);
+    const wallet = Number(row.wallet_fen ?? 0);
+    if (cap === "unlimited") {
+      db.prepare(
+        `UPDATE workspace_billing
+         SET ${usedColumn(field)} = ${usedColumn(field)} + @amount,
+             updated_at = @updated_at
+         WHERE workspace_id = @workspace_id`,
+      ).run({
+        workspace_id: workspaceId,
+        amount,
+        updated_at: new Date().toISOString(),
+      });
+      writeBillingUsage(db, {
+        workspaceId,
+        field,
+        amount,
+        fromIncluded: amount,
+        fromWallet: 0,
+        walletFen: 0,
+        actor,
+      });
+      return true;
+    }
+    const includedLeft = Math.max(0, cap - used);
+    const fromIncluded = Math.min(amount, includedLeft);
+    const fromWallet = Math.max(0, amount - fromIncluded);
+    const cost = fromWallet * unitFen;
+    if (wallet < cost) return false;
+    db.prepare(
+      `UPDATE workspace_billing
+       SET ${usedColumn(field)} = ${usedColumn(field)} + @amount,
+           wallet_fen = @wallet_fen,
+           updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    ).run({
+      workspace_id: workspaceId,
+      amount,
+      wallet_fen: wallet - cost,
+      updated_at: new Date().toISOString(),
+    });
+    writeBillingUsage(db, {
+      workspaceId,
+      field,
+      amount,
+      fromIncluded,
+      fromWallet,
+      walletFen: cost,
+      actor,
+    });
+    return true;
+  })();
+}
+
+export function refundMeteredUsage(
+  workspaceId: string,
+  field: BillingQuotaField,
+  amount: number,
+  cap: number | "unlimited",
+  unitFen: number,
+  actor?: BillingUsageActor,
+) {
+  if (amount <= 0) return;
+  const db = getDb();
+  const col = usedColumn(field);
+  db.transaction(() => {
+    const row = getOrCreateWorkspaceBilling(workspaceId);
+    const used = Number(row[col as keyof WorkspaceBillingRow] ?? 0);
+    const wallet = Number(row.wallet_fen ?? 0);
+    const overage = cap === "unlimited" ? 0 : Math.max(0, used - cap);
+    const fromWallet = Math.min(amount, overage);
+    const fromIncluded = Math.max(0, amount - fromWallet);
+    const refundFen = fromWallet * unitFen;
+    db.prepare(
+      `UPDATE workspace_billing
+       SET ${col} = MAX(0, ${col} - @amount),
+           wallet_fen = @wallet_fen,
+           updated_at = @updated_at
+       WHERE workspace_id = @workspace_id`,
+    ).run({
+      workspace_id: workspaceId,
+      amount,
+      wallet_fen: wallet + refundFen,
+      updated_at: new Date().toISOString(),
+    });
+    writeBillingUsage(db, {
+      workspaceId,
+      field,
+      amount: -amount,
+      fromIncluded: -fromIncluded,
+      fromWallet: -fromWallet,
+      walletFen: -refundFen,
+      actor,
+    });
+  })();
+}
+
+export function insertBillingAdjustment(input: {
+  workspaceId: string;
+  actorEmail: string;
+  kind: string;
+  detail: string;
+}) {
+  getDb()
+    .prepare(
+      `INSERT INTO billing_adjustments
+       (id, workspace_id, actor_email, kind, detail, created_at)
+       VALUES (@id, @workspace_id, @actor_email, @kind, @detail, @created_at)`,
+    )
+    .run({
+      id: randomUUID(),
+      workspace_id: input.workspaceId,
+      actor_email: input.actorEmail,
+      kind: input.kind,
+      detail: input.detail,
+      created_at: new Date().toISOString(),
+    });
+}
+
+export type BillingOrderRow = {
+  id: string;
+  workspace_id: string;
+  actor_email: string;
+  kind: string;
+  sku: string;
+  label: string;
+  interval: string;
+  amount_yuan: number;
+  status: string;
+  created_at: string;
+  paid_at: string | null;
+  stripe_session_id: string | null;
+};
+
+export function insertBillingOrder(input: {
+  id?: string;
+  workspaceId: string;
+  actorEmail: string;
+  kind: string;
+  sku: string;
+  label: string;
+  interval: string;
+  amountYuan: number;
+  status: string;
+  paidAt?: string | null;
+  stripeSessionId?: string | null;
+}): BillingOrderRow {
+  const now = new Date().toISOString();
+  const row: BillingOrderRow = {
+    id: input.id || randomUUID(),
+    workspace_id: input.workspaceId,
+    actor_email: input.actorEmail,
+    kind: input.kind,
+    sku: input.sku,
+    label: input.label,
+    interval: input.interval,
+    amount_yuan: input.amountYuan,
+    status: input.status,
+    created_at: now,
+    paid_at: input.paidAt ?? (input.status === "paid" ? now : null),
+    stripe_session_id: input.stripeSessionId ?? null,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO billing_orders
+       (id, workspace_id, actor_email, kind, sku, label, interval, amount_yuan, status, created_at, paid_at, stripe_session_id)
+       VALUES (@id, @workspace_id, @actor_email, @kind, @sku, @label, @interval, @amount_yuan, @status, @created_at, @paid_at, @stripe_session_id)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getBillingOrderById(id: string): BillingOrderRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM billing_orders WHERE id = ? LIMIT 1`)
+    .get(id) as BillingOrderRow | undefined;
+}
+
+export function getBillingOrderByStripeSession(
+  sessionId: string,
+): BillingOrderRow | undefined {
+  return getDb()
+    .prepare(
+      `SELECT * FROM billing_orders WHERE stripe_session_id = ? LIMIT 1`,
+    )
+    .get(sessionId) as BillingOrderRow | undefined;
+}
+
+export function setBillingOrderStripeSession(id: string, sessionId: string) {
+  getDb()
+    .prepare(
+      `UPDATE billing_orders SET stripe_session_id = @session_id WHERE id = @id`,
+    )
+    .run({ id, session_id: sessionId });
+}
+
+export function setBillingOrderStatus(
+  id: string,
+  status: string,
+  paidAt?: string | null,
+) {
+  getDb()
+    .prepare(
+      `UPDATE billing_orders
+       SET status = @status, paid_at = @paid_at
+       WHERE id = @id`,
+    )
+    .run({
+      id,
+      status,
+      paid_at:
+        paidAt === undefined
+          ? status === "paid"
+            ? new Date().toISOString()
+            : null
+          : paidAt,
+    });
+}
+
+export function listBillingOrders(workspaceId: string, limit = 20): BillingOrderRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM billing_orders
+       WHERE workspace_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    )
+    .all(workspaceId, limit) as BillingOrderRow[];
+}
+
+/** 累计已支付「充值」金额（元）。用于 API 模型加价档。 */
+export function sumPaidWalletYuan(workspaceId: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(amount_yuan), 0) AS total
+       FROM billing_orders
+       WHERE workspace_id = ?
+         AND status = 'paid'
+         AND kind = 'wallet'`,
+    )
+    .get(workspaceId) as { total?: number } | undefined;
+  return Math.max(0, Number(row?.total ?? 0));
+}
+
+export function listWorkspacesAdmin(): Array<{
+  id: string;
+  name: string;
+  created_at: string;
+  emails: string;
+  names: string;
+}> {
+  return getDb()
+    .prepare(
+      `SELECT w.id, w.name, w.created_at,
+              COALESCE(GROUP_CONCAT(u.email, char(10)), '') AS emails,
+              COALESCE(GROUP_CONCAT(u.display_name, char(10)), '') AS names
+       FROM workspaces w
+       LEFT JOIN workspace_users u ON u.workspace_id = w.id
+       GROUP BY w.id
+       ORDER BY w.created_at DESC`,
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    created_at: string;
+    emails: string;
+    names: string;
+  }>;
+}
+
 export function createWorkspaceUser(input: {
   workspaceId: string;
   email: string;
@@ -1279,12 +2748,13 @@ export function createWorkspaceUser(input: {
     password_hash: input.passwordHash,
     display_name: input.displayName?.trim() || input.email.split("@")[0] || "用户",
     created_at: new Date().toISOString(),
+    email_verified_at: null as string | null,
   };
   getDb()
     .prepare(
       `INSERT INTO workspace_users
-       (id, workspace_id, email, password_hash, display_name, created_at)
-       VALUES (@id, @workspace_id, @email, @password_hash, @display_name, @created_at)`,
+       (id, workspace_id, email, password_hash, display_name, created_at, email_verified_at)
+       VALUES (@id, @workspace_id, @email, @password_hash, @display_name, @created_at, @email_verified_at)`,
     )
     .run(row);
   return row;
@@ -1301,6 +2771,7 @@ export function getWorkspaceUserByEmail(email: string) {
         password_hash: string;
         display_name: string;
         created_at: string;
+        email_verified_at?: string | null;
       }
     | undefined;
 }
@@ -1316,8 +2787,80 @@ export function getWorkspaceUser(id: string) {
         password_hash: string;
         display_name: string;
         created_at: string;
+        email_verified_at?: string | null;
       }
     | undefined;
+}
+
+export function isWorkspaceUserEmailVerified(user: {
+  email_verified_at?: string | null;
+}): boolean {
+  return Boolean(user.email_verified_at);
+}
+
+export function markWorkspaceUserEmailVerified(userId: string): void {
+  getDb()
+    .prepare(
+      `UPDATE workspace_users
+       SET email_verified_at = ?
+       WHERE id = ? AND (email_verified_at IS NULL OR email_verified_at = '')`,
+    )
+    .run(new Date().toISOString(), userId);
+}
+
+export function createEmailVerifyToken(userId: string): string {
+  const token = randomToken(32);
+  const now = new Date();
+  getDb()
+    .prepare(`DELETE FROM email_verify_tokens WHERE user_id = ?`)
+    .run(userId);
+  getDb()
+    .prepare(
+      `INSERT INTO email_verify_tokens
+       (id, user_id, token_hash, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      randomUUID(),
+      userId,
+      sha256(token),
+      new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      now.toISOString(),
+    );
+  return token;
+}
+
+export function latestEmailVerifyCreatedAt(userId: string): string | undefined {
+  const row = getDb()
+    .prepare(
+      `SELECT created_at FROM email_verify_tokens
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(userId) as { created_at?: string } | undefined;
+  return row?.created_at;
+}
+
+export function consumeEmailVerifyToken(token: string) {
+  const hash = sha256(token.trim());
+  const row = getDb()
+    .prepare(
+      `SELECT user_id, expires_at FROM email_verify_tokens WHERE token_hash = ?`,
+    )
+    .get(hash) as { user_id: string; expires_at: string } | undefined;
+  if (!row) return null;
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    getDb()
+      .prepare(`DELETE FROM email_verify_tokens WHERE token_hash = ?`)
+      .run(hash);
+    return null;
+  }
+  getDb()
+    .prepare(`DELETE FROM email_verify_tokens WHERE user_id = ?`)
+    .run(row.user_id);
+  markWorkspaceUserEmailVerified(row.user_id);
+  return getWorkspaceUser(row.user_id) || null;
 }
 
 export function createAuthSession(input: {
@@ -1362,17 +2905,29 @@ export function deleteAuthSessionByToken(token: string) {
   getDb().prepare(`DELETE FROM auth_sessions WHERE token = ?`).run(token);
 }
 
+export function extendAuthSession(token: string, expiresAt: string) {
+  getDb()
+    .prepare(`UPDATE auth_sessions SET expires_at = ? WHERE token = ?`)
+    .run(expiresAt, token);
+}
+
 export function createExtensionTokenRow(input: {
   workspaceId: string;
   userId: string;
   label?: string;
+  /** api = 模型 API 密钥（dwapi_）；默认扩展绑定（dwext_） */
+  kind?: "extension" | "api";
 }) {
+  const kind = input.kind === "api" ? "api" : "extension";
+  const prefix = kind === "api" ? "dwapi_" : "dwext_";
   const row = {
     id: randomUUID(),
     workspace_id: input.workspaceId,
     user_id: input.userId,
-    token: `dwext_${randomToken(24)}`,
-    label: input.label?.trim() || "扩展绑定",
+    token: `${prefix}${randomToken(24)}`,
+    label:
+      input.label?.trim() ||
+      (kind === "api" ? "API 调用" : "扩展绑定"),
     created_at: new Date().toISOString(),
     last_used_at: null as string | null,
   };
@@ -1571,13 +3126,14 @@ export function claimNextPlaywrightJob(
       )
       .get(workspaceId, workspaceId) as PublishJob | undefined;
     if (!row) return undefined;
-    getDb()
+    const info = getDb()
       .prepare(
         `UPDATE publish_jobs
          SET status = 'running', claimed_by = ?, claimed_at = ?, updated_at = ?, error = NULL
          WHERE id = ? AND status = 'pending'`,
       )
       .run(agentId, now, now, row.id);
+    if (!info.changes) return undefined;
     return getJob(row.id);
   });
   return tx();
@@ -1715,6 +3271,80 @@ export function insertArticleInfographic(
   return row;
 }
 
+export function listArticlePainKeywords(articleId: string): Array<{
+  keyword: string;
+  angle: string;
+  intent: string;
+}> {
+  try {
+    return getDb()
+      .prepare(
+        `SELECT gk.keyword AS keyword, gk.angle AS angle, gk.intent AS intent
+         FROM geo_keyword_articles gka
+         JOIN geo_keywords gk ON gk.id = gka.keyword_id
+         WHERE gka.article_id = ?
+         ORDER BY gka.created_at DESC
+         LIMIT 8`,
+      )
+      .all(articleId) as Array<{ keyword: string; angle: string; intent: string }>;
+  } catch {
+    return [];
+  }
+}
+
+export function getArticlePodcastByArticle(
+  articleId: string,
+): ArticlePodcast | undefined {
+  try {
+    return getDb()
+      .prepare("SELECT * FROM article_podcasts WHERE article_id = ?")
+      .get(articleId) as ArticlePodcast | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveArticlePodcast(row: ArticlePodcast): ArticlePodcast {
+  const now = new Date().toISOString();
+  const existing = getArticlePodcastByArticle(row.article_id);
+  const next: ArticlePodcast = {
+    ...row,
+    cover_url: row.cover_url ?? existing?.cover_url ?? null,
+    tts_model: resolveTtsSpeechModel(
+      row.tts_model || existing?.tts_model || DEFAULT_TTS_SPEECH_MODEL,
+    ),
+    created_at: existing?.created_at || row.created_at || now,
+    updated_at: now,
+    id: existing?.id || row.id,
+  };
+  if (existing) {
+    getDb()
+      .prepare(
+        `UPDATE article_podcasts
+         SET title = @title, mode = @mode, host_voice = @host_voice,
+             guest_voice = @guest_voice, tts_model = @tts_model,
+             status = @status, error = @error,
+             audio_url = @audio_url, cover_url = @cover_url,
+             duration_sec = @duration_sec,
+             turns_json = @turns_json, updated_at = @updated_at
+         WHERE article_id = @article_id`,
+      )
+      .run(next);
+  } else {
+    getDb()
+      .prepare(
+        `INSERT INTO article_podcasts
+         (id, article_id, title, mode, host_voice, guest_voice, tts_model, status, error,
+          audio_url, cover_url, duration_sec, turns_json, created_at, updated_at)
+         VALUES (@id, @article_id, @title, @mode, @host_voice, @guest_voice, @tts_model,
+          @status, @error, @audio_url, @cover_url, @duration_sec, @turns_json,
+          @created_at, @updated_at)`,
+      )
+      .run(next);
+  }
+  return getArticlePodcastByArticle(row.article_id) || next;
+}
+
 export function parseCastIds(
   raw?: string | null,
   fallback?: string | null,
@@ -1752,6 +3382,9 @@ function hydrateVideoSeries(
     character_id: row.character_id || castIds[0] || null,
     cast_json,
     speak_mode: normalizeSpeakMode(row.speak_mode),
+    inner_voice: resolveInnerVoice(row.inner_voice),
+    premise: typeof row.premise === "string" ? row.premise : "",
+    duration_sec: Number(row.duration_sec) === 15 ? 15 : Number(row.duration_sec) === 90 ? 90 : 0,
     voice_id: typeof row.voice_id === "string" ? row.voice_id : "",
     hook_style:
       typeof row.hook_style === "string" && row.hook_style.trim()
@@ -1759,6 +3392,18 @@ function hydrateVideoSeries(
         : row.genre === "drama"
           ? "drama"
           : "talk",
+    look_style:
+      typeof row.look_style === "string" && row.look_style.trim()
+        ? row.look_style.trim()
+        : "semi",
+    props_json:
+      typeof row.props_json === "string" && row.props_json.trim()
+        ? row.props_json
+        : "[]",
+    wardrobe_json:
+      typeof row.wardrobe_json === "string" ? row.wardrobe_json : "",
+    lyrics: typeof row.lyrics === "string" ? row.lyrics : "",
+    music_json: typeof row.music_json === "string" ? row.music_json : "",
   };
 }
 
@@ -1769,6 +3414,81 @@ export function getVideoSeriesByArticle(
     getDb()
       .prepare(`SELECT * FROM article_video_series WHERE article_id = ?`)
       .get(articleId) as ArticleVideoSeries | undefined,
+  );
+}
+
+export function ensureVideoSeries(
+  articleId: string,
+  title?: string,
+): ArticleVideoSeries {
+  const existing = getVideoSeriesByArticle(articleId);
+  if (existing) return existing;
+  const article = getArticle(articleId);
+  const now = new Date().toISOString();
+  const series: ArticleVideoSeries = {
+    id: randomUUID(),
+    article_id: articleId,
+    genre: "edu",
+    title: (title || article?.script_title || article?.title || "")
+      .trim()
+      .slice(0, 16),
+    logline: "",
+    premise: "",
+    audience: "",
+    notes: "",
+    episode_count: 0,
+    duration_sec: 90,
+    character_id: null,
+    cast_json: "[]",
+    speak_mode: "narration",
+    inner_voice: "off",
+    voice_id: "",
+    hook_style: "talk",
+    look_style: "semi",
+    props_json: "[]",
+    wardrobe_json: "",
+    lyrics: "",
+    music_json: "",
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO article_video_series
+       (id, article_id, genre, title, logline, premise, audience, notes, episode_count, duration_sec, character_id, cast_json, speak_mode, inner_voice, voice_id, hook_style, look_style, props_json, lyrics, music_json, created_at, updated_at)
+       VALUES (@id, @article_id, @genre, @title, @logline, @premise, @audience, @notes, @episode_count, @duration_sec, @character_id, @cast_json, @speak_mode, @inner_voice, @voice_id, @hook_style, @look_style, @props_json, @lyrics, @music_json, @created_at, @updated_at)`,
+    )
+    .run(series);
+  return hydrateVideoSeries(series)!;
+}
+
+export function getVideoSeriesByMusicTask(
+  taskId: string,
+): ArticleVideoSeries | undefined {
+  const id = taskId.trim();
+  if (!id) return undefined;
+  const safe = id.replace(/[%_]/g, "");
+  const rows = getDb()
+    .prepare(`SELECT * FROM article_video_series WHERE music_json LIKE ?`)
+    .all(`%${safe}%`) as ArticleVideoSeries[];
+  const hit = rows.find((row) => {
+    try {
+      const parsed = JSON.parse(row.music_json || "{}") as { taskId?: string };
+      return parsed.taskId === id;
+    } catch {
+      return false;
+    }
+  });
+  return hydrateVideoSeries(hit);
+}
+
+export function getVideoSeries(
+  seriesId: string,
+): ArticleVideoSeries | undefined {
+  return hydrateVideoSeries(
+    getDb()
+      .prepare(`SELECT * FROM article_video_series WHERE id = ?`)
+      .get(seriesId) as ArticleVideoSeries | undefined,
   );
 }
 
@@ -1795,13 +3515,17 @@ export function replaceVideoSeries(input: {
   genre: VideoScriptGenre;
   title: string;
   logline: string;
+  premise?: string;
   audience: string;
   notes: string;
   character_id?: string | null;
   cast_json?: string;
   speak_mode?: VideoSpeakMode;
+  inner_voice?: ArticleVideoSeries["inner_voice"];
   voice_id?: string;
   hook_style?: string;
+  look_style?: string;
+  duration_sec?: number;
   episodes: Array<{
     episode_no: number;
     title: string;
@@ -1812,10 +3536,12 @@ export function replaceVideoSeries(input: {
     next_hook: string;
     duration_sec: number;
     shots_json: string;
+    director_json?: string;
   }>;
 }): { series: ArticleVideoSeries; episodes: ArticleVideoEpisode[] } {
   const now = new Date().toISOString();
   const database = getDb();
+  const prev = getVideoSeriesByArticle(input.articleId);
   const replace = database.transaction(() => {
     database
       .prepare(`DELETE FROM article_video_series WHERE article_id = ?`)
@@ -1826,24 +3552,32 @@ export function replaceVideoSeries(input: {
       genre: input.genre,
       title: input.title,
       logline: input.logline,
+      premise: input.premise?.trim() || "",
       audience: input.audience,
       notes: input.notes,
       episode_count: input.episodes.length,
+      duration_sec: Number(input.duration_sec) === 15 ? 15 : 90,
       character_id: input.character_id?.trim() || parseCastIds(input.cast_json)[0] || null,
       cast_json: JSON.stringify(
         parseCastIds(input.cast_json, input.character_id),
       ),
       speak_mode: input.speak_mode === "dialogue" ? "dialogue" : "narration",
+      inner_voice: resolveInnerVoice(input.inner_voice),
       voice_id: input.voice_id?.trim() || "",
-      hook_style: input.hook_style?.trim() || (input.genre === "drama" ? "drama" : "talk"),
+      hook_style: input.hook_style?.trim() || "talk",
+      look_style: input.look_style?.trim() || "semi",
+      props_json: "[]",
+      wardrobe_json: "",
+      lyrics: prev?.lyrics || "",
+      music_json: prev?.music_json || "",
       created_at: now,
       updated_at: now,
     };
     database
       .prepare(
         `INSERT INTO article_video_series
-         (id, article_id, genre, title, logline, audience, notes, episode_count, character_id, cast_json, speak_mode, voice_id, hook_style, created_at, updated_at)
-         VALUES (@id, @article_id, @genre, @title, @logline, @audience, @notes, @episode_count, @character_id, @cast_json, @speak_mode, @voice_id, @hook_style, @created_at, @updated_at)`,
+         (id, article_id, genre, title, logline, premise, audience, notes, episode_count, duration_sec, character_id, cast_json, speak_mode, inner_voice, voice_id, hook_style, look_style, props_json, lyrics, music_json, created_at, updated_at)
+         VALUES (@id, @article_id, @genre, @title, @logline, @premise, @audience, @notes, @episode_count, @duration_sec, @character_id, @cast_json, @speak_mode, @inner_voice, @voice_id, @hook_style, @look_style, @props_json, @lyrics, @music_json, @created_at, @updated_at)`,
       )
       .run(series);
     const episodes = input.episodes.map((ep) => {
@@ -1859,9 +3593,11 @@ export function replaceVideoSeries(input: {
         next_hook: ep.next_hook,
         duration_sec: ep.duration_sec,
         shots_json: ep.shots_json,
+        director_json: ep.director_json || "",
         confirmed: 0,
         video_status: "idle",
         video_url: null,
+        subtitle_url: null,
         video_error: null,
         video_model: null,
         created_at: now,
@@ -1871,10 +3607,10 @@ export function replaceVideoSeries(input: {
         .prepare(
           `INSERT INTO article_video_episodes
            (id, series_id, episode_no, title, hook, voiceover, on_screen, recap, next_hook,
-            duration_sec, shots_json, confirmed, video_status, video_url, video_error, video_model,
+            duration_sec, shots_json, director_json, confirmed, video_status, video_url, video_error, video_model,
             created_at, updated_at)
            VALUES (@id, @series_id, @episode_no, @title, @hook, @voiceover, @on_screen, @recap, @next_hook,
-            @duration_sec, @shots_json, @confirmed, @video_status, @video_url, @video_error, @video_model,
+            @duration_sec, @shots_json, @director_json, @confirmed, @video_status, @video_url, @video_error, @video_model,
             @created_at, @updated_at)`,
         )
         .run(row);
@@ -1892,12 +3628,21 @@ export function updateVideoSeriesFields(
       ArticleVideoSeries,
       | "title"
       | "logline"
+      | "premise"
       | "audience"
       | "notes"
       | "character_id"
       | "cast_json"
       | "speak_mode"
+      | "inner_voice"
       | "voice_id"
+      | "look_style"
+      | "props_json"
+      | "wardrobe_json"
+      | "episode_count"
+      | "duration_sec"
+      | "lyrics"
+      | "music_json"
     >
   >,
 ): ArticleVideoSeries | undefined {
@@ -1918,6 +3663,7 @@ export function updateVideoSeriesFields(
     ...current,
     title: patch.title ?? current.title,
     logline: patch.logline ?? current.logline,
+    premise: patch.premise ?? current.premise,
     audience: patch.audience ?? current.audience,
     notes: patch.notes ?? current.notes,
     character_id:
@@ -1931,18 +3677,53 @@ export function updateVideoSeriesFields(
         : current.speak_mode === "dialogue"
           ? "dialogue"
           : "narration",
+    inner_voice:
+      patch.inner_voice !== undefined
+        ? resolveInnerVoice(patch.inner_voice)
+        : resolveInnerVoice(current.inner_voice),
     voice_id:
       patch.voice_id !== undefined
         ? patch.voice_id.trim()
         : current.voice_id || "",
+    look_style:
+      patch.look_style !== undefined
+        ? patch.look_style.trim() || "semi"
+        : current.look_style || "semi",
+    props_json:
+      patch.props_json !== undefined
+        ? patch.props_json.trim() || "[]"
+        : current.props_json || "[]",
+    wardrobe_json:
+      patch.wardrobe_json !== undefined
+        ? patch.wardrobe_json.trim()
+        : current.wardrobe_json || "",
+    episode_count:
+      patch.episode_count !== undefined
+        ? Math.max(1, Math.round(Number(patch.episode_count) || 1))
+        : current.episode_count || 0,
+    duration_sec:
+      patch.duration_sec !== undefined
+        ? Number(patch.duration_sec) === 15
+          ? 15
+          : 90
+        : Number(current.duration_sec) === 15
+          ? 15
+          : Number(current.duration_sec) === 90
+            ? 90
+            : 0,
+    lyrics: patch.lyrics !== undefined ? patch.lyrics : current.lyrics || "",
+    music_json:
+      patch.music_json !== undefined
+        ? patch.music_json
+        : current.music_json || "",
     updated_at: new Date().toISOString(),
   };
   getDb()
     .prepare(
       `UPDATE article_video_series
-       SET title = @title, logline = @logline, audience = @audience, notes = @notes,
+       SET title = @title, logline = @logline, premise = @premise, audience = @audience, notes = @notes,
            character_id = @character_id, cast_json = @cast_json, speak_mode = @speak_mode,
-           voice_id = @voice_id, updated_at = @updated_at
+           inner_voice = @inner_voice, voice_id = @voice_id, look_style = @look_style, props_json = @props_json, wardrobe_json = @wardrobe_json, episode_count = @episode_count, duration_sec = @duration_sec, lyrics = @lyrics, music_json = @music_json, updated_at = @updated_at
        WHERE id = @id`,
     )
     .run(next);
@@ -1955,7 +3736,7 @@ export function setSeriesCast(
 ): ArticleVideoSeries | undefined {
   const unique = [...new Set(characterIds.map((id) => id.trim()).filter(Boolean))].slice(
     0,
-    4,
+    MAX_SERIES_CAST,
   );
   return updateVideoSeriesFields(seriesId, {
     character_id: unique[0] || null,
@@ -1983,8 +3764,20 @@ export function listSeriesCharacters(articleId: string): StudioCharacter[] {
   if (!series) return [];
   const article = getArticle(articleId);
   const workspaceId = article?.workspace_id || "ws_local";
-  return parseCastIds(series.cast_json, series.character_id)
-    .map((id) => getStudioCharacter(id, workspaceId))
+  const ids = parseCastIds(series.cast_json, series.character_id);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM studio_characters
+       WHERE workspace_id = ? AND id IN (${placeholders})`,
+    )
+    .all(workspaceId, ...ids) as StudioCharacter[];
+  const byId = new Map(
+    rows.map((row) => [row.id, hydrateStudioCharacter(row)!] as const),
+  );
+  return ids
+    .map((id) => byId.get(id))
     .filter((row): row is StudioCharacter => Boolean(row));
 }
 
@@ -2001,6 +3794,7 @@ export function updateVideoEpisodeFields(
       | "next_hook"
       | "duration_sec"
       | "shots_json"
+      | "director_json"
       | "confirmed"
     >
   >,
@@ -2017,6 +3811,7 @@ export function updateVideoEpisodeFields(
     next_hook: patch.next_hook ?? current.next_hook,
     duration_sec: patch.duration_sec ?? current.duration_sec,
     shots_json: patch.shots_json ?? current.shots_json,
+    director_json: patch.director_json ?? current.director_json ?? "",
     confirmed: patch.confirmed ?? current.confirmed,
     updated_at: new Date().toISOString(),
   };
@@ -2025,7 +3820,7 @@ export function updateVideoEpisodeFields(
       `UPDATE article_video_episodes
        SET title = @title, hook = @hook, voiceover = @voiceover, on_screen = @on_screen,
            recap = @recap, next_hook = @next_hook, duration_sec = @duration_sec,
-           shots_json = @shots_json, confirmed = @confirmed, updated_at = @updated_at
+           shots_json = @shots_json, director_json = @director_json, confirmed = @confirmed, updated_at = @updated_at
        WHERE id = @id`,
     )
     .run(next);
@@ -2044,6 +3839,7 @@ export function replaceVideoEpisodeScript(
     | "next_hook"
     | "duration_sec"
     | "shots_json"
+    | "director_json"
   >,
 ): ArticleVideoEpisode | undefined {
   const current = getVideoEpisode(episodeId);
@@ -2054,6 +3850,9 @@ export function replaceVideoEpisodeScript(
     confirmed: 0,
     video_status: "idle",
     video_url: null,
+    source_video_url: null,
+    subtitle_url: null,
+    caption_cues_json: "",
     video_error: null,
     video_model: null,
     updated_at: new Date().toISOString(),
@@ -2063,12 +3862,81 @@ export function replaceVideoEpisodeScript(
       `UPDATE article_video_episodes
        SET title = @title, hook = @hook, voiceover = @voiceover, on_screen = @on_screen,
            recap = @recap, next_hook = @next_hook, duration_sec = @duration_sec,
-           shots_json = @shots_json, confirmed = 0, video_status = 'idle',
-           video_url = NULL, video_error = NULL, video_model = NULL, updated_at = @updated_at
+           shots_json = @shots_json, director_json = @director_json, confirmed = 0, video_status = 'idle',
+           video_url = NULL, source_video_url = NULL, subtitle_url = NULL,
+           caption_cues_json = '', video_error = NULL, video_model = NULL, updated_at = @updated_at
        WHERE id = @id`,
     )
     .run(next);
   return next;
+}
+
+export function insertVideoEpisode(input: {
+  seriesId: string;
+  episode_no: number;
+  title: string;
+  hook: string;
+  voiceover: string;
+  on_screen: string;
+  recap: string;
+  next_hook: string;
+  duration_sec: number;
+  shots_json: string;
+  director_json?: string;
+}): ArticleVideoEpisode {
+  const now = new Date().toISOString();
+  const row: ArticleVideoEpisode = {
+    id: randomUUID(),
+    series_id: input.seriesId,
+    episode_no: input.episode_no,
+    title: input.title,
+    hook: input.hook,
+    voiceover: input.voiceover,
+    on_screen: input.on_screen,
+    recap: input.recap,
+    next_hook: input.next_hook,
+    duration_sec: input.duration_sec,
+    shots_json: input.shots_json,
+    director_json: input.director_json || "",
+    confirmed: 0,
+    video_status: "idle",
+    video_url: null,
+    subtitle_url: null,
+    video_error: null,
+    video_model: null,
+    created_at: now,
+    updated_at: now,
+  };
+  const database = getDb();
+  const write = database.transaction(() => {
+    database
+      .prepare(
+        `INSERT INTO article_video_episodes
+         (id, series_id, episode_no, title, hook, voiceover, on_screen, recap, next_hook,
+          duration_sec, shots_json, director_json, confirmed, video_status, video_url, video_error, video_model,
+          created_at, updated_at)
+         VALUES (@id, @series_id, @episode_no, @title, @hook, @voiceover, @on_screen, @recap, @next_hook,
+          @duration_sec, @shots_json, @director_json, @confirmed, @video_status, @video_url, @video_error, @video_model,
+          @created_at, @updated_at)`,
+      )
+      .run(row);
+    const count = (
+      database
+        .prepare(
+          `SELECT COUNT(*) AS n FROM article_video_episodes WHERE series_id = ?`,
+        )
+        .get(input.seriesId) as { n: number }
+    ).n;
+    database
+      .prepare(
+        `UPDATE article_video_series
+         SET episode_count = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(count, now, input.seriesId);
+    return row;
+  });
+  return write();
 }
 
 export function setVideoEpisodeRender(
@@ -2076,6 +3944,10 @@ export function setVideoEpisodeRender(
   patch: {
     video_status: VideoEpisodeStatus;
     video_url?: string | null;
+    source_video_url?: string | null;
+    subtitle_url?: string | null;
+    caption_style_json?: string | null;
+    caption_cues_json?: string | null;
     video_error?: string | null;
     video_model?: string | null;
   },
@@ -2087,6 +3959,22 @@ export function setVideoEpisodeRender(
     video_status: patch.video_status,
     video_url:
       patch.video_url !== undefined ? patch.video_url : current.video_url,
+    source_video_url:
+      patch.source_video_url !== undefined
+        ? patch.source_video_url
+        : current.source_video_url ?? null,
+    subtitle_url:
+      patch.subtitle_url !== undefined
+        ? patch.subtitle_url
+        : current.subtitle_url,
+    caption_style_json:
+      patch.caption_style_json !== undefined
+        ? patch.caption_style_json
+        : current.caption_style_json ?? "",
+    caption_cues_json:
+      patch.caption_cues_json !== undefined
+        ? patch.caption_cues_json
+        : current.caption_cues_json ?? "",
     video_error:
       patch.video_error !== undefined ? patch.video_error : current.video_error,
     video_model:
@@ -2096,18 +3984,157 @@ export function setVideoEpisodeRender(
   getDb()
     .prepare(
       `UPDATE article_video_episodes
-       SET video_status = @video_status, video_url = @video_url, video_error = @video_error,
-           video_model = @video_model, updated_at = @updated_at
+       SET video_status = @video_status, video_url = @video_url,
+           source_video_url = @source_video_url, subtitle_url = @subtitle_url,
+           caption_style_json = @caption_style_json, caption_cues_json = @caption_cues_json,
+           video_error = @video_error, video_model = @video_model, updated_at = @updated_at
        WHERE id = @id`,
     )
     .run(next);
   return next;
 }
 
-export function listVideoCatalog(workspaceId: string): VideoCatalogItem[] {
+/** 文章列表旁注：剧本集数 / 已出片数（仅查给定 id） */
+export function videoCountsForArticles(
+  articleIds: string[],
+): Map<string, { scripts: number; videos: number }> {
+  const out = new Map<string, { scripts: number; videos: number }>();
+  if (!articleIds.length) return out;
+  const placeholders = articleIds.map(() => "?").join(",");
   const rows = getDb()
     .prepare(
-      `SELECT
+      `SELECT s.article_id AS article_id,
+              COUNT(e.id) AS scripts,
+              SUM(
+                CASE
+                  WHEN e.video_status = 'ready'
+                    OR (e.video_url IS NOT NULL AND TRIM(e.video_url) != '')
+                  THEN 1 ELSE 0
+                END
+              ) AS videos
+       FROM article_video_series s
+       INNER JOIN article_video_episodes e ON e.series_id = s.id
+       WHERE s.article_id IN (${placeholders})
+       GROUP BY s.article_id`,
+    )
+    .all(...articleIds) as Array<{
+    article_id: string;
+    scripts: number;
+    videos: number;
+  }>;
+  for (const row of rows) {
+    out.set(row.article_id, {
+      scripts: Number(row.scripts) || 0,
+      videos: Number(row.videos) || 0,
+    });
+  }
+  return out;
+}
+
+export function podcastCountsForArticles(articleIds: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!articleIds.length) return out;
+  try {
+    const placeholders = articleIds.map(() => "?").join(",");
+    const rows = getDb()
+      .prepare(
+        `SELECT article_id AS article_id
+         FROM article_podcasts
+         WHERE article_id IN (${placeholders})
+           AND status = 'ready'`,
+      )
+      .all(...articleIds) as Array<{ article_id: string }>;
+    for (const row of rows) out.set(row.article_id, 1);
+  } catch {
+    // table may not exist on a very old snapshot
+  }
+  return out;
+}
+
+export function listPodcastCatalog(
+  workspaceId: string,
+  limit?: number,
+  offset = 0,
+): PodcastCatalogItem[] {
+  try {
+    const capped =
+      typeof limit === "number" && limit > 0
+        ? Math.min(500, Math.floor(limit))
+        : null;
+    const off = Math.max(0, Math.floor(offset) || 0);
+    const rows = getDb()
+      .prepare(
+        `SELECT
+           p.article_id AS article_id,
+           a.title AS article_title,
+           p.title AS podcast_title,
+           p.mode AS mode,
+           p.audio_url AS audio_url,
+           p.cover_url AS cover_url,
+           p.duration_sec AS duration_sec,
+           p.turns_json AS turns_json,
+           p.updated_at AS updated_at
+         FROM article_podcasts p
+         INNER JOIN articles a ON a.id = p.article_id
+         WHERE (a.workspace_id = ? OR a.workspace_id IS NULL OR a.workspace_id = '')
+           AND p.status = 'ready'
+           AND (
+             (p.audio_url IS NOT NULL AND TRIM(p.audio_url) != '')
+             OR (p.turns_json IS NOT NULL AND TRIM(p.turns_json) != '' AND TRIM(p.turns_json) != '[]')
+           )
+         ORDER BY p.updated_at DESC
+         ${capped == null ? "" : "LIMIT ? OFFSET ?"}`,
+      )
+      .all(
+        ...(capped == null
+          ? [workspaceId]
+          : [workspaceId, capped, off]),
+      ) as Array<{
+      article_id: string;
+      article_title: string;
+      podcast_title: string;
+      mode: string;
+      audio_url: string | null;
+      cover_url: string | null;
+      duration_sec: number;
+      turns_json: string;
+      updated_at: string;
+    }>;
+    const items: PodcastCatalogItem[] = [];
+    for (const row of rows) {
+      const turns = parsePodcastTurns(row.turns_json);
+      const hasAudio = Boolean(String(row.audio_url || "").trim());
+      if (!hasAudio && turns.length === 0) continue;
+      items.push({
+        article_id: row.article_id,
+        article_title: row.article_title,
+        podcast_title: row.podcast_title || row.article_title,
+        mode: row.mode === "solo" ? "solo" : "dialogue",
+        audio_url: row.audio_url,
+        cover_url: row.cover_url || null,
+        duration_sec: Number(row.duration_sec) || 0,
+        turn_count: turns.length,
+        turns,
+        updated_at: row.updated_at,
+      });
+    }
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+export function listVideoCatalog(
+  workspaceId: string,
+  limit?: number,
+  offset = 0,
+): VideoCatalogItem[] {
+  const capped =
+    typeof limit === "number" && limit > 0
+      ? Math.min(500, Math.floor(limit))
+      : null;
+  const off = Math.max(0, Math.floor(offset) || 0);
+  const sql = `SELECT
          a.id AS article_id,
          a.title AS article_title,
          s.id AS series_id,
@@ -2125,9 +4152,14 @@ export function listVideoCatalog(workspaceId: string): VideoCatalogItem[] {
        INNER JOIN article_video_series s ON s.id = e.series_id
        INNER JOIN articles a ON a.id = s.article_id
        WHERE a.workspace_id = ? OR a.workspace_id IS NULL OR a.workspace_id = ''
-       ORDER BY e.updated_at DESC, e.episode_no ASC`,
-    )
-    .all(workspaceId) as Array<{
+       ORDER BY e.updated_at DESC, e.episode_no ASC${
+         capped != null ? " LIMIT ? OFFSET ?" : ""
+       }`;
+  const rows = (
+    capped != null
+      ? getDb().prepare(sql).all(workspaceId, capped, off)
+      : getDb().prepare(sql).all(workspaceId)
+  ) as Array<{
     article_id: string;
     article_title: string;
     series_id: string;
@@ -2157,6 +4189,271 @@ export function listVideoCatalog(workspaceId: string): VideoCatalogItem[] {
     video_url: row.video_url,
     updated_at: row.updated_at,
   }));
+}
+
+/** 只返回已有可播放曲目的系列，类似视频页只列有成片的。 */
+export function listMusicCatalog(
+  workspaceId: string,
+  limit?: number,
+  offset = 0,
+): MusicCatalogItem[] {
+  const capped =
+    typeof limit === "number" && limit > 0
+      ? Math.min(500, Math.floor(limit))
+      : null;
+  const off = Math.max(0, Math.floor(offset) || 0);
+  const rows = getDb()
+    .prepare(
+      `SELECT
+         a.id AS article_id,
+         a.title AS article_title,
+         s.id AS series_id,
+         s.title AS series_title,
+         s.genre AS genre,
+         s.hook_style AS hook_style,
+         s.music_json AS music_json,
+         s.updated_at AS updated_at
+       FROM article_video_series s
+       INNER JOIN articles a ON a.id = s.article_id
+       WHERE (a.workspace_id = ? OR a.workspace_id IS NULL OR a.workspace_id = '')
+         AND s.music_json IS NOT NULL
+         AND TRIM(s.music_json) != ''
+       ORDER BY s.updated_at DESC`,
+    )
+    .all(workspaceId) as Array<{
+    article_id: string;
+    article_title: string;
+    series_id: string;
+    series_title: string;
+    genre: VideoScriptGenre;
+    hook_style?: string;
+    music_json: string;
+    updated_at: string;
+  }>;
+
+  const playable: MusicCatalogItem[] = [];
+  for (const row of rows) {
+    let trackCount = 0;
+    let status = "idle";
+    try {
+      const parsed = JSON.parse(row.music_json || "{}") as {
+        status?: string;
+        tracks?: Array<{ url?: string; streamUrl?: string }>;
+      };
+      status = typeof parsed.status === "string" ? parsed.status : "idle";
+      trackCount = Array.isArray(parsed.tracks)
+        ? parsed.tracks.filter(
+            (t) =>
+              Boolean(String(t?.url || "").trim()) ||
+              Boolean(String(t?.streamUrl || "").trim()),
+          ).length
+        : 0;
+    } catch {
+      continue;
+    }
+    if (trackCount <= 0) continue;
+    playable.push({
+      article_id: row.article_id,
+      article_title: row.article_title,
+      series_id: row.series_id,
+      series_title: row.series_title,
+      genre: row.genre,
+      hook_style: row.hook_style,
+      track_count: trackCount,
+      music_status: status,
+      updated_at: row.updated_at,
+    });
+  }
+
+  if (capped == null) return playable;
+  return playable.slice(off, off + capped);
+}
+
+export function createVideoPublishJob(input: {
+  episodeId: string;
+  articleId: string;
+  platform: string;
+}): VideoPublishJob {
+  const now = new Date().toISOString();
+  const row: VideoPublishJob = {
+    id: randomUUID(),
+    episode_id: input.episodeId,
+    article_id: input.articleId,
+    platform: input.platform,
+    status: "running",
+    error: null,
+    result_url: null,
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO video_publish_jobs
+       (id, episode_id, article_id, platform, status, error, result_url, created_at, updated_at)
+       VALUES (@id, @episode_id, @article_id, @platform, @status, @error, @result_url, @created_at, @updated_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getVideoPublishJob(id: string): VideoPublishJob | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM video_publish_jobs WHERE id = ?`)
+    .get(id) as VideoPublishJob | undefined;
+}
+
+export function updateVideoPublishJob(
+  id: string,
+  patch: Partial<Pick<VideoPublishJob, "status" | "error" | "result_url">>,
+): VideoPublishJob | undefined {
+  const current = getDb()
+    .prepare(`SELECT * FROM video_publish_jobs WHERE id = ?`)
+    .get(id) as VideoPublishJob | undefined;
+  if (!current) return undefined;
+  const next: VideoPublishJob = {
+    ...current,
+    status: patch.status ?? current.status,
+    error: patch.error !== undefined ? patch.error : current.error,
+    result_url:
+      patch.result_url !== undefined ? patch.result_url : current.result_url,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE video_publish_jobs
+       SET status = @status, error = @error, result_url = @result_url, updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run(next);
+  return next;
+}
+
+export function failRunningVideoPublishJobs(
+  reason = "已改点重新发布",
+): void {
+  getDb()
+    .prepare(
+      `UPDATE video_publish_jobs
+       SET status = 'failed', error = ?, updated_at = ?
+       WHERE status IN ('pending', 'running')`,
+    )
+    .run(reason, new Date().toISOString());
+}
+
+export function listVideoPublishJobs(
+  workspaceId: string,
+  limit = 40,
+): VideoPublishJob[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         j.id, j.episode_id, j.article_id, j.platform, j.status, j.error, j.result_url,
+         j.created_at, j.updated_at,
+         e.episode_no AS episode_no,
+         e.title AS episode_title,
+         s.title AS series_title
+       FROM video_publish_jobs j
+       INNER JOIN article_video_episodes e ON e.id = j.episode_id
+       INNER JOIN article_video_series s ON s.id = e.series_id
+       INNER JOIN articles a ON a.id = j.article_id
+       WHERE a.workspace_id = ? OR a.workspace_id IS NULL OR a.workspace_id = ''
+       ORDER BY j.created_at DESC
+       LIMIT ?`,
+    )
+    .all(workspaceId, limit) as VideoPublishJob[];
+}
+
+export function createMusicPublishJob(input: {
+  articleId: string;
+  seriesId: string;
+  trackId: string;
+  platform: string;
+}): MusicPublishJob {
+  const now = new Date().toISOString();
+  const row: MusicPublishJob = {
+    id: randomUUID(),
+    article_id: input.articleId,
+    series_id: input.seriesId,
+    track_id: input.trackId,
+    platform: input.platform,
+    status: "running",
+    error: null,
+    result_url: null,
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO music_publish_jobs
+       (id, article_id, series_id, track_id, platform, status, error, result_url, created_at, updated_at)
+       VALUES (@id, @article_id, @series_id, @track_id, @platform, @status, @error, @result_url, @created_at, @updated_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getMusicPublishJob(id: string): MusicPublishJob | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM music_publish_jobs WHERE id = ?`)
+    .get(id) as MusicPublishJob | undefined;
+}
+
+export function updateMusicPublishJob(
+  id: string,
+  patch: Partial<Pick<MusicPublishJob, "status" | "error" | "result_url">>,
+): MusicPublishJob | undefined {
+  const current = getDb()
+    .prepare(`SELECT * FROM music_publish_jobs WHERE id = ?`)
+    .get(id) as MusicPublishJob | undefined;
+  if (!current) return undefined;
+  const next: MusicPublishJob = {
+    ...current,
+    status: patch.status ?? current.status,
+    error: patch.error === undefined ? current.error : patch.error,
+    result_url:
+      patch.result_url === undefined ? current.result_url : patch.result_url,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE music_publish_jobs
+       SET status = @status, error = @error, result_url = @result_url, updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run(next);
+  return next;
+}
+
+export function failRunningMusicPublishJobs(
+  reason = "已改点重新发布",
+): void {
+  getDb()
+    .prepare(
+      `UPDATE music_publish_jobs
+       SET status = 'failed', error = ?, updated_at = ?
+       WHERE status IN ('pending', 'running')`,
+    )
+    .run(reason, new Date().toISOString());
+}
+
+export function listMusicPublishJobs(
+  workspaceId: string,
+  limit = 40,
+): MusicPublishJob[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         j.id, j.article_id, j.series_id, j.track_id, j.platform, j.status, j.error, j.result_url,
+         j.created_at, j.updated_at,
+         s.title AS series_title
+       FROM music_publish_jobs j
+       INNER JOIN article_video_series s ON s.id = j.series_id
+       INNER JOIN articles a ON a.id = j.article_id
+       WHERE a.workspace_id = ? OR a.workspace_id IS NULL OR a.workspace_id = ''
+       ORDER BY j.created_at DESC
+       LIMIT ?`,
+    )
+    .all(workspaceId, limit) as MusicPublishJob[];
 }
 
 function studioAsArticleCharacter(
@@ -2271,6 +4568,7 @@ function hydrateStudioCharacter(
   return {
     ...row,
     voice_id: typeof row.voice_id === "string" ? row.voice_id : "",
+    look: typeof row.look === "string" ? row.look : "",
   };
 }
 
@@ -2287,9 +4585,24 @@ export function getStudioCharacter(
   );
 }
 
+function parseCharacterPhotos(photosJson: string): VideoCharacterPhoto[] {
+  return parsePhotos(photosJson);
+}
+
+function parseCharacterAngles(anglesJson: string): VideoCharacterAngle[] {
+  return parseAngles(anglesJson);
+}
+
 export function listCharacterCatalog(
   workspaceId: string,
+  options?: { angles?: "full" | "first"; limit?: number; offset?: number },
 ): CharacterCatalogItem[] {
+  const angleMode = options?.angles || "full";
+  const capped =
+    typeof options?.limit === "number" && options.limit > 0
+      ? Math.min(500, Math.floor(options.limit))
+      : null;
+  const off = Math.max(0, Math.floor(options?.offset || 0));
   const bindings = getDb()
     .prepare(
       `SELECT s.character_id, s.cast_json, s.article_id, s.title AS series_title, a.title AS article_title
@@ -2319,68 +4632,58 @@ export function listCharacterCatalog(
       scriptsByCharacter.set(characterId, list);
     }
   }
-  const rows = getDb()
-    .prepare(
-      `SELECT c.*, a.title AS article_title
+  const sql =
+    capped != null
+      ? `SELECT c.id, c.name, c.source, c.article_id, c.voice_id, c.look,
+              c.photos_json, c.angles_json, c.updated_at, a.title AS article_title
        FROM studio_characters c
        LEFT JOIN articles a ON a.id = c.article_id
        WHERE c.workspace_id = ?
-       ORDER BY c.updated_at DESC`,
-    )
-    .all(workspaceId) as Array<StudioCharacter & { article_title: string | null }>;
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    source: row.source === "script" ? "script" : "photo",
-    article_id: row.article_id,
-    article_title: row.article_title || null,
-    voice_id: typeof row.voice_id === "string" ? row.voice_id : "",
-    scripts: scriptsByCharacter.get(row.id) || [],
-    photos: (() => {
-      try {
-        const parsed = JSON.parse(row.photos_json) as unknown;
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-          .map((item) => {
-            if (typeof item === "string" && item.trim()) return { url: item.trim() };
-            if (
-              item &&
-              typeof item === "object" &&
-              typeof (item as { url?: string }).url === "string"
-            ) {
-              return { url: (item as { url: string }).url.trim() };
-            }
-            return null;
-          })
-          .filter((x): x is { url: string } => Boolean(x?.url));
-      } catch {
-        return [];
-      }
-    })(),
-    angles: (() => {
-      try {
-        const parsed = JSON.parse(row.angles_json) as unknown;
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-          .map((item) => {
-            if (!item || typeof item !== "object") return null;
-            const o = item as Record<string, unknown>;
-            if (typeof o.url !== "string" || !o.url.trim()) return null;
-            return {
-              id: typeof o.id === "string" ? o.id : "angle",
-              label: typeof o.label === "string" ? o.label : "角度",
-              url: o.url.trim(),
-            };
-          })
-          .filter((x): x is { id: string; label: string; url: string } =>
-            Boolean(x),
-          );
-      } catch {
-        return [];
-      }
-    })(),
-    updated_at: row.updated_at,
-  }));
+       ORDER BY c.updated_at DESC
+       LIMIT ? OFFSET ?`
+      : `SELECT c.id, c.name, c.source, c.article_id, c.voice_id, c.look,
+              c.photos_json, c.angles_json, c.updated_at, a.title AS article_title
+       FROM studio_characters c
+       LEFT JOIN articles a ON a.id = c.article_id
+       WHERE c.workspace_id = ?
+       ORDER BY c.updated_at DESC`;
+  const rows = (
+    capped != null
+      ? getDb().prepare(sql).all(workspaceId, capped, off)
+      : getDb().prepare(sql).all(workspaceId)
+  ) as Array<{
+    id: string;
+    name: string;
+    source: string;
+    article_id: string | null;
+    voice_id: string | null;
+    look: string | null;
+    photos_json: string;
+    angles_json: string;
+    updated_at: string;
+    article_title: string | null;
+  }>;
+  return rows.map((row) => {
+    let photos = parseCharacterPhotos(row.photos_json);
+    let angles = parseCharacterAngles(row.angles_json);
+    if (angleMode === "first") {
+      photos = photos.slice(0, 1);
+      angles = angles.slice(0, 1);
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      source: row.source === "script" ? "script" : "photo",
+      article_id: row.article_id,
+      article_title: row.article_title || null,
+      voice_id: typeof row.voice_id === "string" ? row.voice_id : "",
+      look: typeof row.look === "string" ? row.look : "",
+      scripts: scriptsByCharacter.get(row.id) || [],
+      photos,
+      angles,
+      updated_at: row.updated_at,
+    };
+  });
 }
 
 export function createStudioCharacter(input: {
@@ -2391,6 +4694,7 @@ export function createStudioCharacter(input: {
   source?: CharacterSource;
   articleId?: string | null;
   voice_id?: string;
+  look?: string;
 }): StudioCharacter {
   const now = new Date().toISOString();
   const row: StudioCharacter = {
@@ -2402,14 +4706,15 @@ export function createStudioCharacter(input: {
     source: input.source || "photo",
     article_id: input.articleId?.trim() || null,
     voice_id: input.voice_id?.trim() || "",
+    look: input.look?.replace(/\s+/g, " ").trim().slice(0, 360) || "",
     created_at: now,
     updated_at: now,
   };
   getDb()
     .prepare(
       `INSERT INTO studio_characters
-       (id, workspace_id, name, photos_json, angles_json, source, article_id, voice_id, created_at, updated_at)
-       VALUES (@id, @workspace_id, @name, @photos_json, @angles_json, @source, @article_id, @voice_id, @created_at, @updated_at)`,
+       (id, workspace_id, name, photos_json, angles_json, source, article_id, voice_id, look, created_at, updated_at)
+       VALUES (@id, @workspace_id, @name, @photos_json, @angles_json, @source, @article_id, @voice_id, @look, @created_at, @updated_at)`,
     )
     .run(row);
   return row;
@@ -2423,6 +4728,7 @@ export function updateStudioCharacter(input: {
   angles_json?: string;
   source?: CharacterSource;
   voice_id?: string;
+  look?: string;
 }): StudioCharacter | undefined {
   const current = getStudioCharacter(input.id, input.workspaceId);
   if (!current) return undefined;
@@ -2434,20 +4740,126 @@ export function updateStudioCharacter(input: {
     source: input.source ?? current.source,
     voice_id:
       input.voice_id !== undefined ? input.voice_id.trim() : current.voice_id,
+    look:
+      input.look !== undefined
+        ? input.look.replace(/\s+/g, " ").trim().slice(0, 360)
+        : current.look,
     updated_at: new Date().toISOString(),
   };
   getDb()
     .prepare(
       `UPDATE studio_characters
        SET name = @name, photos_json = @photos_json, angles_json = @angles_json,
-           source = @source, voice_id = @voice_id, updated_at = @updated_at
+           source = @source, voice_id = @voice_id, look = @look, updated_at = @updated_at
        WHERE id = @id`,
     )
     .run(next);
   return next;
 }
 
-const DEFAULT_MENTION_BRANDS = ["点物GEO", "点物", "dianwu.ai", "dianwu"];
+export function listStudioVoices(workspaceId: string): StudioVoice[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM studio_voices WHERE workspace_id = ? ORDER BY updated_at DESC`,
+    )
+    .all(workspaceId) as StudioVoice[];
+}
+
+export function getStudioVoice(
+  id: string,
+  workspaceId: string,
+): StudioVoice | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM studio_voices WHERE id = ? AND workspace_id = ?`)
+    .get(id, workspaceId) as StudioVoice | undefined;
+}
+
+export function getStudioVoiceByProviderId(
+  providerVoiceId: string,
+): StudioVoice | undefined {
+  const id = providerVoiceId.trim();
+  if (!id) return undefined;
+  return getDb()
+    .prepare(
+      `SELECT * FROM studio_voices WHERE provider_voice_id = ? ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(id) as StudioVoice | undefined;
+}
+
+export function createStudioVoice(input: {
+  workspaceId: string;
+  name: string;
+  hint?: string;
+  provider: string;
+  provider_voice_id: string;
+  provider_model: string;
+  sample_url?: string;
+}): StudioVoice {
+  const now = new Date().toISOString();
+  const row: StudioVoice = {
+    id: randomUUID(),
+    workspace_id: input.workspaceId,
+    name: input.name.trim().slice(0, 24) || "我的音色",
+    hint: (input.hint || "").trim().slice(0, 80),
+    provider: input.provider.trim() || "qwen",
+    provider_voice_id: input.provider_voice_id.trim(),
+    provider_model: input.provider_model.trim(),
+    sample_url: input.sample_url?.trim() || "",
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO studio_voices
+       (id, workspace_id, name, hint, provider, provider_voice_id, provider_model, sample_url, created_at, updated_at)
+       VALUES (@id, @workspace_id, @name, @hint, @provider, @provider_voice_id, @provider_model, @sample_url, @created_at, @updated_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function updateStudioVoice(input: {
+  id: string;
+  workspaceId: string;
+  name?: string;
+  hint?: string;
+}): StudioVoice | undefined {
+  const current = getStudioVoice(input.id, input.workspaceId);
+  if (!current) return undefined;
+  const next: StudioVoice = {
+    ...current,
+    name:
+      input.name !== undefined
+        ? input.name.trim().slice(0, 24) || current.name
+        : current.name,
+    hint:
+      input.hint !== undefined ? input.hint.trim().slice(0, 80) : current.hint,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE studio_voices
+       SET name = @name, hint = @hint, updated_at = @updated_at
+       WHERE id = @id AND workspace_id = @workspace_id`,
+    )
+    .run({
+      id: next.id,
+      workspace_id: input.workspaceId,
+      name: next.name,
+      hint: next.hint,
+      updated_at: next.updated_at,
+    });
+  return next;
+}
+
+export function deleteStudioVoice(id: string, workspaceId: string): boolean {
+  const result = getDb()
+    .prepare(`DELETE FROM studio_voices WHERE id = ? AND workspace_id = ?`)
+    .run(id, workspaceId);
+  return Number(result.changes) > 0;
+}
+
+const DEFAULT_MENTION_BRANDS = ["点物", "dianwu.ai", "dianwu"];
 const DEFAULT_MENTION_QUESTIONS = [
   "GEO是什么？中小企业怎么做？",
   "GEO和SEO、AEO有什么区别？",
@@ -2594,21 +5006,23 @@ function mapMentionResult(row: {
 export function listMentionRuns(
   limit = 20,
   workspaceId?: string | null,
+  offset = 0,
 ): MentionRun[] {
+  const off = Math.max(0, Math.floor(offset) || 0);
   const runs = (
     workspaceId
       ? getDb()
           .prepare(
             `SELECT * FROM mention_runs
              WHERE workspace_id = ?
-             ORDER BY created_at DESC LIMIT ?`,
+             ORDER BY created_at DESC LIMIT ? OFFSET ?`,
           )
-          .all(workspaceId, limit)
+          .all(workspaceId, limit, off)
       : getDb()
           .prepare(
-            `SELECT * FROM mention_runs ORDER BY created_at DESC LIMIT ?`,
+            `SELECT * FROM mention_runs ORDER BY created_at DESC LIMIT ? OFFSET ?`,
           )
-          .all(limit)
+          .all(limit, off)
   ) as Array<{
     id: string;
     created_at: string;
@@ -2622,7 +5036,12 @@ export function listMentionRuns(
   const placeholders = ids.map(() => "?").join(",");
   const rows = getDb()
     .prepare(
-      `SELECT * FROM mention_results WHERE run_id IN (${placeholders})`,
+      `SELECT id, run_id, question, source, mentioned, excerpt, error,
+              CASE
+                WHEN length(answer) > 400 THEN substr(answer, 1, 400) || '…'
+                ELSE answer
+              END AS answer
+       FROM mention_results WHERE run_id IN (${placeholders})`,
     )
     .all(...ids) as Array<{
     id: string;
@@ -2644,6 +5063,36 @@ export function listMentionRuns(
     ...run,
     results: byRun.get(run.id) ?? [],
   }));
+}
+
+/** 总览用：只要最近一次查排名计数，不拉 answer 大字段 */
+export function getLatestMentionRunSummary(
+  workspaceId: string,
+): {
+  id: string;
+  created_at: string;
+  hit_count: number;
+  miss_count: number;
+  error_count: number;
+} | null {
+  const row = getDb()
+    .prepare(
+      `SELECT id, created_at, hit_count, miss_count, error_count
+       FROM mention_runs
+       WHERE workspace_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(workspaceId) as
+    | {
+        id: string;
+        created_at: string;
+        hit_count: number;
+        miss_count: number;
+        error_count: number;
+      }
+    | undefined;
+  return row || null;
 }
 
 export function insertMentionRun(input: {
@@ -2716,14 +5165,34 @@ function mapPaidOrderStatus(value: string): PaidOrderStatus {
   return "pending";
 }
 
-export function listPaidOrders(workspaceId: string): PaidOrder[] {
-  const orders = getDb()
-    .prepare(
-      `SELECT * FROM paid_orders
-       WHERE workspace_id = ?
-       ORDER BY created_at DESC`,
-    )
-    .all(workspaceId) as Array<{
+export function listPaidOrders(
+  workspaceId: string,
+  limit?: number,
+  offset = 0,
+): PaidOrder[] {
+  const capped =
+    typeof limit === "number" && limit > 0
+      ? Math.min(500, Math.floor(limit))
+      : null;
+  const off = Math.max(0, Math.floor(offset) || 0);
+  const orders = (
+    capped != null
+      ? getDb()
+          .prepare(
+            `SELECT * FROM paid_orders
+             WHERE workspace_id = ?
+             ORDER BY created_at DESC
+             LIMIT ? OFFSET ?`,
+          )
+          .all(workspaceId, capped, off)
+      : getDb()
+          .prepare(
+            `SELECT * FROM paid_orders
+             WHERE workspace_id = ?
+             ORDER BY created_at DESC`,
+          )
+          .all(workspaceId)
+  ) as Array<{
     id: string;
     workspace_id: string;
     article_id: string;
@@ -2861,14 +5330,34 @@ function mapPaidAdOrderStatus(value: string): PaidAdOrderStatus {
   return "pending";
 }
 
-export function listPaidAdOrders(workspaceId: string): PaidAdOrder[] {
-  const orders = getDb()
-    .prepare(
-      `SELECT * FROM ads_orders
-       WHERE workspace_id = ?
-       ORDER BY created_at DESC`,
-    )
-    .all(workspaceId) as Array<{
+export function listPaidAdOrders(
+  workspaceId: string,
+  limit?: number,
+  offset = 0,
+): PaidAdOrder[] {
+  const capped =
+    typeof limit === "number" && limit > 0
+      ? Math.min(500, Math.floor(limit))
+      : null;
+  const off = Math.max(0, Math.floor(offset) || 0);
+  const orders = (
+    capped != null
+      ? getDb()
+          .prepare(
+            `SELECT * FROM ads_orders
+             WHERE workspace_id = ?
+             ORDER BY created_at DESC
+             LIMIT ? OFFSET ?`,
+          )
+          .all(workspaceId, capped, off)
+      : getDb()
+          .prepare(
+            `SELECT * FROM ads_orders
+             WHERE workspace_id = ?
+             ORDER BY created_at DESC`,
+          )
+          .all(workspaceId)
+  ) as Array<{
     id: string;
     workspace_id: string;
     article_id: string;
@@ -2994,4 +5483,48 @@ export function createPaidAdOrder(input: {
     updated_at: now,
     items,
   };
+}
+
+export function listAiModels(query: ListAiModelsQuery = {}) {
+  return listCatalogModels(getDb(), query);
+}
+
+export function getAiModel(id: string) {
+  return getCatalogModelById(getDb(), id);
+}
+
+export function createAiModel(input: AiModelInput) {
+  return createCatalogModel(getDb(), input);
+}
+
+export function updateAiModel(id: string, patch: Partial<AiModelInput>) {
+  return updateCatalogModel(getDb(), id, patch);
+}
+
+export function deleteAiModel(id: string) {
+  return removeCatalogModel(getDb(), id);
+}
+
+export function ensureAiModelCatalogSeed() {
+  seedAiModelCatalog(getDb());
+}
+
+export async function syncProxyAiModels() {
+  return syncProxyModelsIntoCatalog(getDb());
+}
+
+export async function syncQwenAiModels() {
+  return syncQwenModelsIntoCatalog(getDb());
+}
+
+export async function syncArkAiModels() {
+  return syncArkModelsIntoCatalog(getDb());
+}
+
+export async function syncCloudflareAiModels() {
+  return syncCloudflareModelsIntoCatalog(getDb());
+}
+
+export function syncOfficialAiModelPricing() {
+  return syncOfficialPricingIntoCatalog(getDb());
 }

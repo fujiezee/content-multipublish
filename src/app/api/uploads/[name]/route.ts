@@ -27,8 +27,36 @@ export async function GET(_req: Request, ctx: Ctx) {
           ? "image/webp"
           : ext === ".svg"
             ? "image/svg+xml"
-            : "application/octet-stream";
+            : ext === ".mp3"
+              ? "audio/mpeg"
+            : ext === ".wav"
+              ? "audio/wav"
+              : ext === ".srt"
+                ? "application/x-subrip; charset=utf-8"
+            : ext === ".vtt"
+                ? "text/vtt; charset=utf-8"
+                : ext === ".mp4"
+                  ? "video/mp4"
+                  : ext === ".webm"
+                    ? "video/webm"
+                    : ext === ".mov"
+                      ? "video/quicktime"
+                : "application/octet-stream";
   return new NextResponse(buf, {
-    headers: { "Content-Type": type, "Cache-Control": "public, max-age=31536000" },
+    headers: {
+      "Content-Type": type,
+      "Cache-Control": "public, max-age=31536000",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    },
   });
 }

@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 开源中国 — Wechatsync v2 oschina.ts 移植
  */
@@ -91,12 +94,13 @@ export function createOschinaAdapter(BaseAdapter) {
         const rawHtml = article.html || "";
         const useMarkdown = rawMarkdown.trim().length > 0;
         let content = useMarkdown ? rawMarkdown : rawHtml;
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["oschina.net", "static.oschina.net"],
+          {skipPatterns: ["oschina.net", "static.oschina.net"],
             onProgress: options?.onImageProgress,
+            platformName: "开源中国",
           },
         );
 

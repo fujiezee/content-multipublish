@@ -1,4 +1,3 @@
-import { marked } from "marked";
 import TurndownService from "turndown";
 import {
   FAMILY_BAN_REPLACEMENTS,
@@ -9,15 +8,57 @@ import {
 import {
   absolutizeHtmlMedia,
   absolutizeMarkdownMedia,
+  resolvePublicOrigin,
+  rewritePublicMediaUrl,
 } from "@/lib/content/media-urls";
+import {
+  hydrateMarkdownTables,
+  markdownToHtml,
+} from "@/lib/content/markdown";
+import { unwrapInfographicParagraphs } from "@/lib/ai/infographic-insert";
+import { ensureCoverInBodyHtml } from "@/lib/content/cover-html";
 import type { Article, PlatformId, PublishContent } from "@/lib/types";
-
-marked.setOptions({ gfm: true, breaks: true });
 
 const turndown = new TurndownService({
   headingStyle: "atx",
   codeBlockStyle: "fenced",
   bulletListMarker: "-",
+});
+
+function cellText(cell: { textContent?: string | null }): string {
+  return (cell.textContent || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\|/g, "\\|");
+}
+
+turndown.addRule("gfmTable", {
+  filter: "table",
+  replacement(_content, node) {
+    if (!("querySelectorAll" in node)) return "\n\n";
+    const rows = Array.from(
+      (node as unknown as { querySelectorAll: (sel: string) => ArrayLike<Element> }).querySelectorAll(
+        "tr",
+      ),
+    );
+    if (!rows.length) return "\n\n";
+    const grid = rows.map((row) =>
+      Array.from(row.querySelectorAll("th, td")).map(cellText),
+    );
+    const width = Math.max(1, ...grid.map((cols) => cols.length));
+    const padded = grid.map((cols) => {
+      const next = cols.slice();
+      while (next.length < width) next.push("");
+      return next;
+    });
+    const line = (cols: string[]) => `| ${cols.join(" | ")} |`;
+    const header = padded[0] ?? Array.from({ length: width }, () => "");
+    const body = padded.slice(1);
+    return `\n\n${line(header)}\n${line(header.map(() => "---"))}${
+      body.length ? `\n${body.map(line).join("\n")}` : ""
+    }\n\n`;
+  },
 });
 
 function looksLikeHtml(input: string) {
@@ -42,7 +83,7 @@ function htmlToText(html: string) {
     .trim();
 }
 
-function htmlToMarkdown(html: string) {
+export function htmlToMarkdown(html: string) {
   try {
     return turndown.turndown(html).trim();
   } catch {
@@ -63,16 +104,25 @@ export function fieldsToPublishContent(fields: {
   mediaOrigin?: string | null;
 }): PublishContent {
   const raw = fields.body || "";
-  const bodyHtml = absolutizeHtmlMedia(
+  const bodyHtmlBase = absolutizeHtmlMedia(
     toEditorHtml(raw),
     fields.mediaOrigin,
   );
+  const origin = resolvePublicOrigin(fields.mediaOrigin);
+  const coverPath = fields.coverPath
+    ? rewritePublicMediaUrl(fields.coverPath)
+    : fields.coverPath;
+  const bodyHtml = ensureCoverInBodyHtml(
+    bodyHtmlBase,
+    coverPath,
+    coverPath?.startsWith("http") ? coverPath : undefined,
+    fields.title.trim() || "封面",
+    origin,
+  );
   const bodyText = htmlToText(bodyHtml);
-  const bodyMarkdownRaw = looksLikeHtml(raw)
-    ? htmlToMarkdown(bodyHtml)
-    : raw.trim() || htmlToMarkdown(bodyHtml);
+  // Derive markdown from final HTML so cover img is never HTML-only (CSDN/腾讯云等走 markdown).
   const bodyMarkdown = absolutizeMarkdownMedia(
-    bodyMarkdownRaw,
+    htmlToMarkdown(bodyHtml),
     fields.mediaOrigin,
   );
 
@@ -82,7 +132,7 @@ export function fieldsToPublishContent(fields: {
     bodyHtml,
     bodyText,
     summary: fields.summary?.trim() || bodyText.slice(0, 120),
-    coverPath: fields.coverPath ?? null,
+    coverPath: coverPath ?? null,
   };
 }
 
@@ -112,11 +162,23 @@ export function articleToPublishContent(
   });
 }
 
+/** Leftover markdown inside HTML (e.g. **加粗** after a mixed paste). */
+function renderInlineMarkdown(html: string): string {
+  return html
+    .replace(/<strong>([^<]*)<strong>/gi, "<strong>$1</strong>")
+    .replace(/<\/strong>([^<]+)<\/strong>/gi, (_, text: string) => `<strong>${text}</strong>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
 /** Normalize stored body to HTML for the rich text editor / publishers. */
 export function toEditorHtml(raw: string): string {
   if (!raw.trim()) return "";
-  if (looksLikeHtml(raw)) return raw;
-  return marked.parse(raw, { async: false }) as string;
+  const html = looksLikeHtml(raw)
+    ? hydrateMarkdownTables(raw)
+    : markdownToHtml(raw);
+  return unwrapInfographicParagraphs(renderInlineMarkdown(html));
 }
 
 function applyBanReplacements(text: string, family: PlatformFamily): string {
@@ -125,6 +187,32 @@ function applyBanReplacements(text: string, family: PlatformFamily): string {
     out = out.replace(rule.pattern, rule.replace);
   }
   return out;
+}
+
+export function titleCharLength(text: string): number {
+  return Array.from(text || "").length;
+}
+
+/** Cut at a punctuation/space near the limit so the title still reads complete. */
+export function clampTitle(title: string, max: number): string {
+  const trimmed = title.replace(/\s+/g, " ").trim();
+  const chars = Array.from(trimmed);
+  if (!max || chars.length <= max) return trimmed;
+  const slice = chars.slice(0, max).join("");
+  const cut = Math.max(
+    slice.lastIndexOf("。"),
+    slice.lastIndexOf("！"),
+    slice.lastIndexOf("？"),
+    slice.lastIndexOf("，"),
+    slice.lastIndexOf("、"),
+    slice.lastIndexOf("："),
+    slice.lastIndexOf(":"),
+    slice.lastIndexOf(" "),
+    slice.lastIndexOf("|"),
+    slice.lastIndexOf("｜"),
+  );
+  const out = (cut >= Math.floor(max * 0.55) ? slice.slice(0, cut) : slice).trim();
+  return out || slice.trim();
 }
 
 /** Rule-based polish: title caps, summary trim, family phrase softeners. */
@@ -140,9 +228,8 @@ export function polishForPlatform(
   let summary = applyBanReplacements(content.summary, family);
 
   const maxTitle = PLATFORM_TITLE_MAX[platform];
-  if (maxTitle && title.length > maxTitle) {
-    title = title.slice(0, maxTitle).trim();
-  }
+  // 抖音文章超 30 字在发布时重写，这里不截断，也不连坐同族的百家号。
+  if (maxTitle && platform !== "douyin") title = clampTitle(title, maxTitle);
 
   if (summary.length > 120) {
     summary = summary.slice(0, 120).trim();
@@ -175,9 +262,11 @@ export function polishForPlatform(
 export function validateForPlatform(
   platform: string,
   content: PublishContent,
+  sourceTitle?: string,
 ): string[] {
   const warnings: string[] = [];
-  const titleLen = content.title.length;
+  const titleLen = titleCharLength(content.title);
+  const sourceLen = titleCharLength(sourceTitle ?? content.title);
   const textLen = content.bodyText.length;
 
   if (!content.title) warnings.push("标题不能为空");
@@ -228,10 +317,49 @@ export function validateForPlatform(
     warnings.push(`标题建议 ≤ 64 字（当前 ${titleLen}）`);
   }
   if (
-    (platform === "xiaohongshu" || platform === "douyin") &&
+    platform === "xiaohongshu" &&
     titleLen > 20
   ) {
     warnings.push(`标题建议 ≤ 20 字（当前 ${titleLen}）`);
+  }
+  if (platform === "douyin") {
+    if (sourceLen > 30) {
+      warnings.push(
+        `抖音文章标题限制 30 字（当前 ${sourceLen}），发布时会按抖音文章重写，不截断`,
+      );
+    } else if (titleLen < 2) {
+      warnings.push("抖音文章标题至少 2 字");
+    }
+  }
+  if (platform === "shunqi") {
+    if (titleLen > 80) {
+      warnings.push(`顺企网标题建议 ≤ 80 字（当前 ${titleLen}）`);
+    }
+    const hasImg =
+      /<img[\s>]/i.test(content.bodyHtml || "") || Boolean(content.coverPath);
+    if (!hasImg) {
+      warnings.push("顺企网新闻可上传 1 张配图，建议加封面或正文图");
+    }
+  }
+  if (platform === "shunqi_product") {
+    if (titleLen > 80) {
+      warnings.push(`顺企网产品名称建议 ≤ 80 字（当前 ${titleLen}）`);
+    }
+    const hasImg =
+      /<img[\s>]/i.test(content.bodyHtml || "") || Boolean(content.coverPath);
+    if (!hasImg) {
+      warnings.push("顺企网产品需要上传图片，请加封面或正文图");
+    }
+  }
+  if (platform === "bafang") {
+    if (titleLen > 32) {
+      warnings.push(`八方资源网标题建议 ≤ 32 字（当前 ${titleLen}）`);
+    }
+    const hasImg =
+      /<img[\s>]/i.test(content.bodyHtml || "") || Boolean(content.coverPath);
+    if (!hasImg) {
+      warnings.push("八方资源网发布产品需要图片，请加封面或正文图");
+    }
   }
   if (platform === "smzdm" && titleLen > 60) {
     warnings.push(`什么值得买标题建议 ≤ 60 字（当前 ${titleLen}）`);

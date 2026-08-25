@@ -1,34 +1,13 @@
-import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { hashPassword } from "@/lib/auth/password";
+import { resolveOwnerUserId } from "@/lib/auth/owner";
 import { authRequired, requireAuth } from "@/lib/auth/session";
 import {
   createExtensionTokenRow,
-  createWorkspaceUser,
-  ensureDefaultWorkspace,
-  getWorkspaceUserByEmail,
   listExtensionTokens,
   revokeExtensionToken,
 } from "@/lib/db";
 
 export const runtime = "nodejs";
-
-async function resolveOwnerUserId(
-  ctx: NonNullable<Awaited<ReturnType<typeof requireAuth>>>,
-): Promise<string | null> {
-  if (ctx.userId !== "local") return ctx.userId;
-  if (authRequired()) return null;
-  ensureDefaultWorkspace();
-  const existing = getWorkspaceUserByEmail("local@dianwu.geo");
-  if (existing) return existing.id;
-  const created = createWorkspaceUser({
-    workspaceId: ctx.workspaceId,
-    email: "local@dianwu.geo",
-    passwordHash: hashPassword(randomUUID()),
-    displayName: "本地工作区",
-  });
-  return created.id;
-}
 
 export async function GET(req: Request) {
   const ctx = await requireAuth(req);
@@ -51,16 +30,20 @@ export async function POST(req: Request) {
   if (!ctx) {
     return NextResponse.json({ error: "未登录" }, { status: 401 });
   }
-  const ownerId = await resolveOwnerUserId(ctx);
+  const ownerId = resolveOwnerUserId(ctx);
   if (!ownerId) {
     return NextResponse.json({ error: "未登录" }, { status: 401 });
   }
   const body = await req.json().catch(() => ({}));
-  const label = String(body.label || "扩展绑定").trim();
+  const label = String(body.label || "").trim();
+  const kind = body.kind === "api" ? "api" : "extension";
   const row = createExtensionTokenRow({
     workspaceId: ctx.workspaceId,
     userId: ownerId,
-    label,
+    label:
+      label ||
+      (kind === "api" ? "API 调用" : "扩展绑定"),
+    kind,
   });
   return NextResponse.json({
     token: {

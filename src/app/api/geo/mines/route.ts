@@ -7,22 +7,38 @@ import {
   listGeoKeywordArticlesByMine,
   listGeoKeywordsByMine,
   listGeoMines,
+  countGeoKeywordsGrouped,
   touchGeoMine,
 } from "@/lib/db";
 import { mineGeoKeywords, normalizeGeoKeyword } from "@/lib/ai/geo-keywords";
 import type { GeoKeyword, GeoKeywordIntent } from "@/lib/types";
+import { requireApiUser } from "@/lib/auth/api";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
+import { parseListPage, slicePage } from "@/lib/list-page";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  const mines = listGeoMines().map((mine) => ({
+export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
+  const { limit, offset } = parseListPage(new URL(req.url));
+  const minesRaw = listGeoMines(limit + 1, auth.ctx.workspaceId, offset);
+  const page = slicePage(minesRaw, limit, offset);
+  const counts = countGeoKeywordsGrouped(page.items.map((m) => m.id));
+  const mines = page.items.map((mine) => ({
     ...mine,
-    keyword_count: listGeoKeywordsByMine(mine.id).length,
+    keyword_count: counts.get(mine.id) || 0,
   }));
-  return Response.json({ mines });
+  return Response.json({
+    mines,
+    nextOffset: page.nextOffset,
+    hasMore: page.hasMore,
+  });
 }
 
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const body = await req.json().catch(() => ({}));
   const seed = typeof body.seed === "string" ? body.seed.trim() : "";
   const context = typeof body.context === "string" ? body.context.trim() : "";
@@ -36,11 +52,11 @@ export async function POST(req: Request) {
       : 40;
 
   if (!seed) {
-    return Response.json({ error: "请填写主词" }, { status: 400 });
+    return Response.json({ error: "请填写产品或主题" }, { status: 400 });
   }
 
   try {
-    const existingNormKeys = listAllGeoNormKeys();
+    const existingNormKeys = listAllGeoNormKeys(auth.ctx.workspaceId);
     const drafts = await mineGeoKeywords({
       seed,
       context,
@@ -49,6 +65,9 @@ export async function POST(req: Request) {
     });
 
     let mine = mineId ? getGeoMine(mineId) : undefined;
+    if (mine && (mine.workspace_id || "ws_local") !== auth.ctx.workspaceId) {
+      return Response.json({ error: "挖词记录不存在" }, { status: 404 });
+    }
     const now = new Date().toISOString();
 
     if (!mine) {
@@ -59,7 +78,7 @@ export async function POST(req: Request) {
         created_at: now,
         updated_at: now,
       };
-      createGeoMine(mine);
+      createGeoMine(mine, auth.ctx.workspaceId);
     } else {
       touchGeoMine(mine.id);
     }
@@ -78,6 +97,7 @@ export async function POST(req: Request) {
 
     const inserted = insertGeoKeywords(keywords);
     const all = listGeoKeywordsByMine(mine.id);
+    await persistCloudflareDb();
 
     return Response.json({
       mine,

@@ -1,4 +1,4 @@
-import { marked } from "marked";
+import { insertCorpusAssetsIntoHtml } from "@/lib/corpus-assets";
 import {
   buildCorpusContext,
   parseCopyResponse,
@@ -6,7 +6,18 @@ import {
 } from "@/lib/ai/copywriting";
 import { streamChatCompletion } from "@/lib/ai/deepseek";
 import { stripBodyLabel } from "@/lib/ai/strip-body-label";
-import { toEditorHtml } from "@/lib/content/adapt";
+import { htmlToMarkdown, toEditorHtml } from "@/lib/content/adapt";
+import {
+  extractCoverSrcFromHtml,
+  upsertCoverInBody,
+} from "@/lib/content/cover-html";
+import { markdownToHtml } from "@/lib/content/markdown";
+import {
+  corpusAssetUrls,
+  htmlImageSrcs,
+  stripUnauthorizedCopyImages,
+} from "@/lib/content/copy-images";
+import { COPY_STRUCTURE_PROMPT } from "@/lib/ai/copy-structure";
 import {
   FAMILY_CORPUS_BOOST_TERMS,
   FAMILY_CORPUS_CATEGORIES,
@@ -15,8 +26,6 @@ import {
   type PlatformFamily,
 } from "@/lib/content/platform-families";
 import type { CorpusItem } from "@/lib/types";
-
-marked.setOptions({ gfm: true, breaks: true });
 
 export type AdaptedVariant = {
   title: string;
@@ -39,20 +48,7 @@ export type AdaptStreamEvent =
   | { type: "error"; family: PlatformFamily; message: string };
 
 function htmlToPlainish(html: string) {
-  return String(html || "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/h[1-6]>/gi, "\n\n")
-    .replace(/<h([1-6])[^>]*>/gi, (_, n) => `${"#".repeat(Number(n))} `)
-    .replace(/<li[^>]*>/gi, "- ")
-    .replace(/<\/?(ul|ol|div|span|section)[^>]*>/gi, "")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return htmlToMarkdown(html);
 }
 
 function masterBrief(input: {
@@ -103,11 +99,15 @@ function buildAdaptMessages(input: {
     input.body.slice(0, 28_000);
 
   const system = `你是多平台内容改编编辑。必须优先依据「主稿」与「语料库」事实改写，不得编造语料/主稿中不存在的公司名、数据、客户案例或资质。
+标题必须一眼想点进去：具体、有判断或反差，按本平台族口气重写，把那句话说完整。字数跟着意思走，常见 16–40 字都可以，禁止压成二十来字；不要照抄主稿的公文题，也不要「必火/躺赚」标题党。
 输出格式（严格遵守）：
-第一行：标题: （一行标题）
+第一行：标题: （一行能停住的完整标题，不要卡在二十字）
 第二行：摘要: （50字以内摘要）
 空一行后直接输出 Markdown 正文，不要写「正文:」标签。
-务必写完整，不要中途停在提纲或半截段落。`;
+主稿里的表格必须保留为 Markdown 表格，不要摊成段落。
+禁止新增主稿和语料里没有的图片：不要编造 ![ ](url)、/public/ 路径、相对路径或占位图。
+务必写完整，不要中途停在提纲或半截段落。
+${COPY_STRUCTURE_PROMPT}`;
 
   const user = `目标平台族：${familyLabel(input.family)}（${input.family}）
 调性要求：
@@ -117,7 +117,8 @@ ${FAMILY_INSTRUCTIONS[input.family]}
 原摘要：${input.summary || "（无）"}
 
 可引用的语料（已按主稿主题筛选，并偏向本平台族；请恰当选用，勿堆砌）：
-${buildCorpusContext(input.corpus)}
+${buildCorpusContext(input.corpus, { images: "markdown" })}
+语料配图 URL 必须保留在改编正文里，不要丢掉图。不要另写语料/主稿里没有的图。
 
 主稿原文（请完整覆盖核心论点后再按平台族重写结构与语气）：
 ${sourceText}`;
@@ -131,17 +132,34 @@ ${sourceText}`;
 async function finalizeAdapted(
   raw: string,
   corpus: CorpusItem[],
+  sourceBody = "",
 ): Promise<AdaptedVariant> {
   const parsed = parseCopyResponse(stripBodyLabel(raw));
   if (!parsed.bodyMarkdown.trim() || parsed.bodyMarkdown.trim().length < 40) {
     throw new Error("生成内容过短或不完整，请重试");
   }
-  const bodyHtml = await marked.parse(parsed.bodyMarkdown);
+  const allowedImages = [
+    ...corpusAssetUrls(corpus),
+    ...htmlImageSrcs(toEditorHtml(sourceBody)),
+  ];
+  const strippedMarkdown = stripUnauthorizedCopyImages(
+    parsed.bodyMarkdown,
+    allowedImages,
+  );
+  let bodyHtml = stripUnauthorizedCopyImages(
+    insertCorpusAssetsIntoHtml(markdownToHtml(strippedMarkdown), corpus),
+    allowedImages,
+  );
+  const masterCover = extractCoverSrcFromHtml(toEditorHtml(sourceBody));
+  if (masterCover) {
+    bodyHtml = upsertCoverInBody(bodyHtml, masterCover, parsed.title);
+  }
+  const bodyMarkdown = htmlToMarkdown(bodyHtml);
   return {
     title: parsed.title,
     summary: parsed.summary,
-    bodyMarkdown: parsed.bodyMarkdown,
-    bodyHtml: typeof bodyHtml === "string" ? bodyHtml : String(bodyHtml),
+    bodyMarkdown,
+    bodyHtml,
     usedCorpus: corpus.map((c) => ({ id: c.id, title: c.title })),
   };
 }
@@ -182,12 +200,12 @@ export async function* streamAdaptArticleToFamily(
     })) {
       if (chunk.type === "thinking") {
         yield { type: "thinking", family: input.family, delta: chunk.text };
-      } else {
+      } else if (chunk.type === "content") {
         content += chunk.text;
         yield { type: "content", family: input.family, delta: chunk.text };
       }
     }
-    const result = await finalizeAdapted(content, corpus);
+    const result = await finalizeAdapted(content, corpus, input.body);
     yield { type: "done", family: input.family, result };
   } catch (err) {
     yield {

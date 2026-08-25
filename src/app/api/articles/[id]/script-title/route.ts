@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUser } from "@/lib/auth/api";
-import { suggestScriptTitle } from "@/lib/ai/copywriting";
+import { pickScriptTitle, suggestScriptTitle } from "@/lib/ai/copywriting";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
 import { getArticleInWorkspace, updateArticle } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -15,7 +16,7 @@ export async function POST(req: Request, ctx: Ctx) {
   if (!article) {
     return NextResponse.json({ error: "文章不存在" }, { status: 404 });
   }
-  const existing = (article.script_title || "").trim();
+  const existing = pickScriptTitle(article.script_title);
   if (existing) {
     return NextResponse.json({ script_title: existing });
   }
@@ -27,5 +28,6 @@ export async function POST(req: Request, ctx: Ctx) {
     return NextResponse.json({ script_title: "" });
   }
   updateArticle(id, { script_title: name });
+  await persistCloudflareDb();
   return NextResponse.json({ script_title: name });
 }

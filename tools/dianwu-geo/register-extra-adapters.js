@@ -23,6 +23,7 @@ import { createZhihuAdapter } from "./adapters/zhihu.js";
 import { createSmzdmAdapter } from "./adapters/smzdm.js";
 import { createXAdapter } from "./adapters/x.js";
 import { createQiehaoAdapter } from "./adapters/qiehao.js";
+import { createToutiaoAdapter } from "./adapters/toutiao.js";
 import { createCsdnAdapter } from "./adapters/csdn.js";
 import { createDafengAdapter } from "./adapters/dafeng.js";
 import { createKuaichuanAdapter } from "./adapters/kuaichuan.js";
@@ -36,6 +37,14 @@ import { createTencentcloudAdapter } from "./adapters/tencentcloud.js";
 import { createAliyunAdapter } from "./adapters/aliyun.js";
 import { createHuaweicloudAdapter } from "./adapters/huaweicloud.js";
 import { createXiaohongshuAdapter } from "./adapters/xiaohongshu.js";
+import { createDouyinAdapter } from "./adapters/douyin.js";
+import { createWeixinAdapter } from "./adapters/weixin.js";
+import { createShunqiAdapter } from "./adapters/shunqi.js";
+import { createShunqiProductAdapter } from "./adapters/shunqi-product.js";
+import { createBafangAdapter } from "./adapters/bafang.js";
+import { createWoshipmAdapter } from "./adapters/woshipm.js";
+import { createJuejinAdapter } from "./adapters/juejin.js";
+import { patchBaseProcessImages } from "./adapters/_images.js";
 
 /** @type {Array<new () => { meta: { id: string } }>} */
 let extraClasses = [];
@@ -94,6 +103,7 @@ function buildExtraClasses(BaseAdapter) {
     createSmzdmAdapter(BaseAdapter),
     createXAdapter(BaseAdapter),
     createQiehaoAdapter(BaseAdapter),
+    createToutiaoAdapter(BaseAdapter),
     createCsdnAdapter(BaseAdapter),
     createDafengAdapter(BaseAdapter),
     createKuaichuanAdapter(BaseAdapter),
@@ -107,6 +117,13 @@ function buildExtraClasses(BaseAdapter) {
     createAliyunAdapter(BaseAdapter),
     createHuaweicloudAdapter(BaseAdapter),
     createXiaohongshuAdapter(BaseAdapter),
+    createDouyinAdapter(BaseAdapter),
+    createWeixinAdapter(BaseAdapter),
+    createShunqiAdapter(BaseAdapter),
+    createShunqiProductAdapter(BaseAdapter),
+    createBafangAdapter(BaseAdapter),
+    createWoshipmAdapter(BaseAdapter),
+    createJuejinAdapter(BaseAdapter),
   ];
 }
 
@@ -160,6 +177,9 @@ function bootstrapExtraAdapters() {
   }
 
   try {
+    // Fail closed for built-in adapters too: processImages used to keep
+    // original URLs when upload failed, so drafts looked OK but had no images.
+    patchBaseProcessImages(api.BaseAdapter);
     extraClasses = buildExtraClasses(api.BaseAdapter);
     extraById = new Map();
     for (const AdapterClass of extraClasses) {
@@ -183,6 +203,15 @@ function bootstrapExtraAdapters() {
     typeof api.registry.has === "function" &&
     api.registry.has("huaweicloud");
   const hasDouban = extraById.has("douban");
+  const hasToutiao = extraById.has("toutiao");
+  const hasTencent = extraById.has("tencentcloud");
+  const hasShunqi = extraById.has("shunqi");
+  const hasShunqiProduct = extraById.has("shunqi_product");
+  const hasBafang = extraById.has("bafang");
+  const hasWoshipm = extraById.has("woshipm");
+  const hasJuejin = extraById.has("juejin");
+  const hasDouyin = extraById.has("douyin");
+  const hasWeixin = extraById.has("weixin");
   console.info(
     "[dianwu-geo] extra adapters ready:",
     registeredIds.length,
@@ -190,8 +219,38 @@ function bootstrapExtraAdapters() {
     hasHuawei,
     "doubanOverride=",
     hasDouban,
+    "toutiaoOverride=",
+    hasToutiao,
+    "tencentcloudOverride=",
+    hasTencent,
+    "shunqi=",
+    hasShunqi,
+    "shunqi_product=",
+    hasShunqiProduct,
+    "bafang=",
+    hasBafang,
+    "woshipmOverride=",
+    hasWoshipm,
+    "juejinOverride=",
+    hasJuejin,
+    "douyin=",
+    hasDouyin,
+    "weixinOverride=",
+    hasWeixin,
   );
-  return hasHuawei && hasDouban;
+  return (
+    hasHuawei &&
+    hasDouban &&
+    hasToutiao &&
+    hasTencent &&
+    hasShunqi &&
+    hasShunqiProduct &&
+    hasBafang &&
+    hasWoshipm &&
+    hasJuejin &&
+    hasDouyin &&
+    hasWeixin
+  );
 }
 
 const ok = bootstrapExtraAdapters();

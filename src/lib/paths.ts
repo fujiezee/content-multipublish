@@ -7,7 +7,12 @@ export const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 export const DEBUG_DIR = path.join(DATA_DIR, "debug");
 
+export function isCloudflareRuntime() {
+  return process.env.CLOUDFLARE === "1";
+}
+
 export function ensureDataDirs() {
+  if (isCloudflareRuntime()) return;
   for (const dir of [DATA_DIR, SESSIONS_DIR, UPLOADS_DIR, DEBUG_DIR]) {
     fs.mkdirSync(dir, { recursive: true });
   }

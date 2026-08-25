@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 51CTO — Wechatsync v2 cto51.ts 移植
  * meta.id 使用产品侧 PlatformId `cto51`（上游为 `51cto`）
@@ -152,12 +155,13 @@ export function createCto51Adapter(BaseAdapter) {
 
         const hasMarkdown = !!article.markdown;
         let content = article.markdown || article.html || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["51cto.com", "s2.51cto.com"],
+          {skipPatterns: ["51cto.com", "s2.51cto.com"],
             onProgress: options?.onImageProgress,
+            platformName: "51CTO",
           },
         );
 

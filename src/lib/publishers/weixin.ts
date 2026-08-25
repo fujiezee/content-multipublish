@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import { resolveCoverFile } from "@/lib/content/cover-file";
 import {
   captureDebugScreenshot,
   clickFirstVisible,
@@ -255,6 +256,30 @@ async function fillBody(page: Page, content: PublishContent) {
   if (len < 2) {
     throw new Error("正文写入后仍为空");
   }
+}
+
+async function uploadLocalCover(
+  page: Page,
+  coverPath: string | null,
+): Promise<boolean> {
+  const file = resolveCoverFile(coverPath);
+  if (!file) return false;
+  await dismissWeixinPopovers(page);
+  const coverBtn = page
+    .locator(
+      ".js_cover_btn_area, .setting-group__cover_primary, .select-cover__btn",
+    )
+    .first();
+  if ((await coverBtn.count()) === 0) return false;
+  await coverBtn.scrollIntoViewIfNeeded().catch(() => undefined);
+  await coverBtn.click({ timeout: 5000, force: true }).catch(() => undefined);
+  await page.waitForTimeout(600);
+  const input = page.locator('input[type="file"]').first();
+  if ((await input.count()) === 0) return false;
+  await input.setInputFiles(file).catch(() => undefined);
+  await page.waitForTimeout(1200);
+  await confirmCoverCrop(page).catch(() => false);
+  return true;
 }
 
 async function openAiCoverDialog(page: Page): Promise<boolean> {
@@ -607,14 +632,16 @@ async function publish(
       content.summary || content.bodyText.slice(0, 80),
     );
 
-    const covered = await selectAiCover(
-      editor,
-      content.title,
-      content.bodyText || content.summary || "",
-    ).catch((err) => {
-      console.warn("[weixin] AI cover failed:", err);
-      return false;
-    });
+    const covered =
+      (await uploadLocalCover(editor, content.coverPath).catch(() => false)) ||
+      (await selectAiCover(
+        editor,
+        content.title,
+        content.bodyText || content.summary || "",
+      ).catch((err) => {
+        console.warn("[weixin] AI cover failed:", err);
+        return false;
+      }));
     if (!covered) {
       console.warn("[weixin] AI cover skipped");
     }

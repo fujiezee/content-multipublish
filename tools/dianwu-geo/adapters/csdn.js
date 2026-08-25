@@ -1,11 +1,12 @@
 /**
  * CSDN — 覆盖内置适配器
  *
- * 对齐 Wechatsync v2：扩展后台 runtime.fetch + Origin/Referer（及 Cookie）改写。
- * 不要在 editor 页内 fetch：自定义 x-ca-* 头会触发 CORS 预检，表现为 Failed to fetch。
+ * bizapi 的 x-ca-* 签名头会触发 CORS 预检。扩展后台 fetch 的 initiator 是
+ * chrome-extension://，CSDN 不放行 → Failed to fetch。
+ * 必须在已登录的 editor.csdn.net 页内发请求（隔离世界原生 XHR，避开页面劫持的 fetch）。
  *
- * 草稿：POST /blog-console-api/v3/mdeditor/saveArticle
- * 图床：沿用内置 imgservice 凭证 + OSS（未改接口）
+ * 草稿：POST /blog-console-api/v3/mdeditor/saveArticle（页内 XHR）
+ * 图床：imgservice 已 404；改走 bizapi /resource-api/v1/image/direct/upload/signature → OBS
  */
 import { assertHostedImages, extractImageSrcs } from "./_images.js";
 
@@ -14,11 +15,6 @@ const SKIP = ["csdnimg.cn", "csdn.net"];
 const FETCH_MS = 25_000;
 const SAVE_MS = 45_000;
 const UPLOAD_MS = 35_000;
-
-const CA_HEADERS = {
-  Origin: "https://editor.csdn.net",
-  Referer: "https://editor.csdn.net/",
-};
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -38,6 +34,12 @@ export function createCsdnAdapter(BaseAdapter) {
 
     /** @type {{ csdnid: string; username: string; avatarurl?: string } | null} */
     userInfo = null;
+
+    /** @type {number | null} */
+    editorTabId = null;
+
+    /** @type {Set<number>} */
+    hiddenEditorWindowIds = new Set();
 
     createUuid() {
       return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -83,83 +85,8 @@ export function createCsdnAdapter(BaseAdapter) {
       return headers;
     }
 
-    async cookieHeader() {
-      if (typeof chrome === "undefined" || !chrome.cookies?.getAll) return "";
-      try {
-        const cookies = await chrome.cookies.getAll({ domain: "csdn.net" });
-        return cookies
-          .filter((c) => c?.name && c?.value)
-          .map((c) => `${c.name}=${c.value}`)
-          .join("; ");
-      } catch {
-        return "";
-      }
-    }
-
-    async hasLoginCookies() {
-      const header = await this.cookieHeader();
-      return /UserName=|UserToken=|UserInfo=|c_token=/i.test(header);
-    }
-
-    async headerRules() {
-      const headers = { ...CA_HEADERS };
-      const cookie = await this.cookieHeader();
-      if (cookie) headers.Cookie = cookie;
-      const resourceTypes = ["xmlhttprequest", "other"];
-      return [
-        {
-          urlFilter: "*://bizapi.csdn.net/*",
-          headers,
-          resourceTypes,
-        },
-        {
-          urlFilter: "*://imgservice.csdn.net/*",
-          headers,
-          resourceTypes,
-        },
-      ];
-    }
-
-    async addRulesSafe(rules) {
-      const api = this.runtime?.headerRules;
-      if (!api?.add) return [];
-      const ids = [];
-      try {
-        for (const rule of rules) {
-          const id = await api.add(rule);
-          if (id) ids.push(id);
-        }
-        return ids;
-      } catch {
-        for (const id of ids) {
-          await api.remove?.(id).catch(() => undefined);
-        }
-        const stripped = rules.map((rule) => {
-          const headers = { ...rule.headers };
-          delete headers.Cookie;
-          return { ...rule, headers };
-        });
-        const retry = [];
-        for (const rule of stripped) {
-          const id = await api.add(rule);
-          if (id) retry.push(id);
-        }
-        return retry;
-      }
-    }
-
-    async withHeaderRules(fn) {
-      const api = this.runtime?.headerRules;
-      const ids = await this.addRulesSafe(await this.headerRules());
-      try {
-        return await fn();
-      } finally {
-        if (api?.remove) {
-          for (const id of ids) {
-            await api.remove(id).catch(() => undefined);
-          }
-        }
-      }
+    sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     withTimeout(promise, ms, label) {
@@ -175,35 +102,199 @@ export function createCsdnAdapter(BaseAdapter) {
       ]).finally(() => clearTimeout(timer));
     }
 
+    isEditorUrl(url) {
+      return (
+        /editor\.csdn\.net/i.test(url || "") &&
+        !/passport|\/login/i.test(url || "")
+      );
+    }
+
+    isLoginUrl(url) {
+      return /passport\.csdn\.net|\/login/i.test(url || "");
+    }
+
+    async hasLoginCookies() {
+      if (typeof chrome === "undefined" || !chrome.cookies?.getAll) return false;
+      try {
+        const cookies = await chrome.cookies.getAll({ domain: "csdn.net" });
+        return cookies.some(
+          (c) =>
+            c?.value &&
+            /UserName|UserToken|UserInfo|c_token/i.test(String(c.name || "")),
+        );
+      } catch {
+        return false;
+      }
+    }
+
+    async waitEditorReady(tabId, timeoutMs = 12_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        let tab;
+        try {
+          tab = await chrome.tabs.get(tabId);
+        } catch {
+          throw new Error("CSDN 编辑器标签页已关闭");
+        }
+        const url = tab.url || tab.pendingUrl || "";
+        if (this.isLoginUrl(url)) {
+          throw new Error(
+            "CSDN 需要登录，请先在浏览器打开 editor.csdn.net 登录后再同步",
+          );
+        }
+        if (this.isEditorUrl(url) && tab.status === "complete") {
+          await this.sleep(400);
+          return tabId;
+        }
+        await this.sleep(250);
+      }
+      throw new Error("CSDN 编辑器页加载超时");
+    }
+
+    async openHiddenEditor() {
+      const win = await chrome.windows.create({
+        url: EDITOR_URL,
+        type: "popup",
+        focused: false,
+        width: 400,
+        height: 300,
+        left: 0,
+        top: 0,
+      });
+      if (win?.id != null) {
+        this.hiddenEditorWindowIds.add(win.id);
+        await chrome.windows
+          .update(win.id, { focused: false, state: "minimized" })
+          .catch(() => undefined);
+      }
+      const tab = win?.tabs?.[0];
+      if (!tab?.id) {
+        throw new Error("无法打开 CSDN 编辑器后台页");
+      }
+      return tab;
+    }
+
+    async closeHiddenEditors() {
+      for (const id of this.hiddenEditorWindowIds) {
+        await chrome.windows.remove(id).catch(() => undefined);
+      }
+      this.hiddenEditorWindowIds.clear();
+      this.editorTabId = null;
+    }
+
+    async ensureEditorTab() {
+      if (this.editorTabId) {
+        try {
+          const tab = await chrome.tabs.get(this.editorTabId);
+          if (tab?.id && this.isEditorUrl(tab.url || "")) {
+            return tab.id;
+          }
+        } catch {
+          this.editorTabId = null;
+        }
+      }
+      const tabs = await chrome.tabs.query({ url: ["*://editor.csdn.net/*"] });
+      let tab =
+        tabs.find((t) => t.id && this.isEditorUrl(t.url || "")) || tabs[0];
+      if (!tab?.id) {
+        tab = await this.openHiddenEditor();
+      }
+      this.editorTabId = tab.id;
+      await this.waitEditorReady(tab.id);
+      return tab.id;
+    }
+
     explainFetch(error, label) {
       const msg = error instanceof Error ? error.message : String(error);
       if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-        return `${label}失败: Failed to fetch。请确认 Chrome 已登录 CSDN 后重试`;
+        return `${label}失败: Failed to fetch。请确认 Chrome 已登录 editor.csdn.net 后重试`;
       }
       return `${label}失败: ${msg}`;
     }
 
+    /**
+     * Isolated-world XHR on editor.csdn.net so Origin is the editor, not the extension.
+     * Native XHR (not page fetch) — CSDN 常劫持 window.fetch。
+     */
+    async pageApiJson(url, init = {}, timeoutMs = FETCH_MS, label = "CSDN 接口") {
+      const method = init.method || "GET";
+      const headers = init.headers || {};
+      const body = init.body ?? null;
+      let lastErr = "未知错误";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const tabId = await this.ensureEditorTab();
+        try {
+          const [injection] = await this.withTimeout(
+            chrome.scripting.executeScript({
+              target: { tabId },
+              world: "ISOLATED",
+              func: (reqUrl, reqMethod, reqHeaders, reqBody, ms) =>
+                new Promise((resolve) => {
+                  const xhr = new XMLHttpRequest();
+                  xhr.open(reqMethod, reqUrl, true);
+                  xhr.withCredentials = true;
+                  xhr.timeout = ms;
+                  Object.entries(reqHeaders || {}).forEach(([key, value]) => {
+                    try {
+                      xhr.setRequestHeader(key, String(value));
+                    } catch {
+                      // Origin / Referer 等禁改头，忽略
+                    }
+                  });
+                  xhr.onload = () =>
+                    resolve({
+                      ok: true,
+                      status: xhr.status,
+                      text: String(xhr.responseText || ""),
+                    });
+                  xhr.onerror = () =>
+                    resolve({ ok: false, error: "Failed to fetch" });
+                  xhr.ontimeout = () =>
+                    resolve({ ok: false, error: `请求超时（>${ms}ms）` });
+                  try {
+                    xhr.send(reqBody);
+                  } catch (error) {
+                    resolve({
+                      ok: false,
+                      error:
+                        error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                }),
+              args: [url, method, headers, body, Math.max(3_000, timeoutMs - 1_000)],
+            }),
+            timeoutMs,
+            label,
+          );
+          const result = injection?.result;
+          if (!result?.ok) {
+            lastErr = result?.error || "未知错误";
+            if (attempt === 2) break;
+            this.editorTabId = null;
+            await this.sleep(400 + attempt * 300);
+            continue;
+          }
+          let data;
+          try {
+            data = JSON.parse(result.text);
+          } catch {
+            throw new Error(
+              `${label}失败: 非 JSON HTTP ${result.status}: ${String(result.text || "").slice(0, 160)}`,
+            );
+          }
+          return data;
+        } catch (error) {
+          lastErr = error instanceof Error ? error.message : String(error);
+          this.editorTabId = null;
+          if (attempt === 2) break;
+          await this.sleep(400 + attempt * 300);
+        }
+      }
+      throw new Error(this.explainFetch(new Error(lastErr), label));
+    }
+
     async apiJson(url, init = {}, timeoutMs = FETCH_MS, label = "CSDN 接口") {
-      let res;
-      try {
-        res = await this.withTimeout(
-          this.runtime.fetch(url, { credentials: "include", ...init }),
-          timeoutMs,
-          label,
-        );
-      } catch (error) {
-        throw new Error(this.explainFetch(error, label));
-      }
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(
-          `${label}失败: 非 JSON HTTP ${res.status}: ${text.slice(0, 160)}`,
-        );
-      }
-      return data;
+      return this.pageApiJson(url, init, timeoutMs, label);
     }
 
     htmlToMarkdown(html) {
@@ -317,15 +408,18 @@ export function createCsdnAdapter(BaseAdapter) {
       const imageBlob = await imageResponse.blob();
       if (!imageBlob.size) throw new Error("图片下载为空");
 
+      const path = "/resource-api/v1/image/direct/upload/signature";
+      const headers = await this.signRequest(path, "POST");
       const cred = await this.apiJson(
-        "https://imgservice.csdn.net/direct/v1.0/image/upload?watermark=&type=blog&rtype=markdown",
+        `https://bizapi.csdn.net${path}`,
         {
-          method: "GET",
-          headers: {
-            "x-image-app": "direct_blog",
-            "x-image-suffix": suffix,
-            "x-image-dir": "direct",
-          },
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            imageTemplate: "",
+            appName: "direct_blog_markdown",
+            imageSuffix: suffix,
+          }),
         },
         FETCH_MS,
         "CSDN 图床凭证",
@@ -338,26 +432,100 @@ export function createCsdnAdapter(BaseAdapter) {
         );
       }
 
+      const uploadData = cred.data;
+      const customParam = uploadData.customParam || {};
+      const fields = {
+        key: uploadData.filePath,
+        policy: uploadData.policy,
+        signature: uploadData.signature,
+        callbackBody: uploadData.callbackBody || "",
+        callbackBodyType: uploadData.callbackBodyType || "",
+        callbackUrl: uploadData.callbackUrl || "",
+        AccessKeyId: uploadData.accessId,
+        "x:rtype": String(customParam.rtype || ""),
+        "x:filePath": String(customParam.filePath || ""),
+        "x:isAudit": String(customParam.isAudit ?? ""),
+        "x:x-image-app": String(customParam["x-image-app"] || ""),
+        "x:type": String(customParam.type || ""),
+        "x:x-image-suffix": String(customParam["x-image-suffix"] || ""),
+        "x:username": String(customParam.username || ""),
+      };
+
       const form = new FormData();
-      form.append("key", cred.data.filePath);
-      form.append("policy", cred.data.policy);
-      form.append("OSSAccessKeyId", cred.data.accessId);
-      form.append("success_action_status", "200");
-      form.append("signature", cred.data.signature);
-      form.append("callback", cred.data.callbackUrl);
+      for (const [key, value] of Object.entries(fields)) {
+        form.append(key, value);
+      }
       form.append("file", imageBlob, `image.${suffix}`);
 
-      let upRes;
+      let upText = "";
+      let upStatus = 0;
       try {
-        upRes = await this.withTimeout(
-          this.runtime.fetch(cred.data.host, { method: "POST", body: form }),
+        const upRes = await this.withTimeout(
+          this.runtime.fetch(uploadData.host, { method: "POST", body: form }),
           UPLOAD_MS,
           "CSDN 图片上传",
         );
-      } catch (error) {
-        throw new Error(this.explainFetch(error, "CSDN 图片上传"));
+        upStatus = upRes.status;
+        upText = await upRes.text();
+      } catch {
+        const bytes = Array.from(new Uint8Array(await imageBlob.arrayBuffer()));
+        const tabId = await this.ensureEditorTab();
+        const [injection] = await this.withTimeout(
+          chrome.scripting.executeScript({
+            target: { tabId },
+            world: "ISOLATED",
+            func: async (host, formFields, arr, contentType, filename, ms) => {
+              const ctrl = new AbortController();
+              const timer = setTimeout(() => ctrl.abort(), ms);
+              try {
+                const blob = new Blob([new Uint8Array(arr)], {
+                  type: contentType || "image/png",
+                });
+                const fd = new FormData();
+                for (const [key, value] of Object.entries(formFields)) {
+                  fd.append(key, value);
+                }
+                fd.append("file", blob, filename);
+                const res = await fetch(host, {
+                  method: "POST",
+                  body: fd,
+                  signal: ctrl.signal,
+                });
+                return { ok: true, status: res.status, text: await res.text() };
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: error instanceof Error ? error.message : String(error),
+                };
+              } finally {
+                clearTimeout(timer);
+              }
+            },
+            args: [
+              uploadData.host,
+              fields,
+              bytes,
+              mime,
+              `image.${suffix}`,
+              UPLOAD_MS - 2_000,
+            ],
+          }),
+          UPLOAD_MS,
+          "CSDN 图片上传",
+        );
+        const result = injection?.result;
+        if (!result?.ok) {
+          throw new Error(
+            this.explainFetch(
+              new Error(result?.error || "Failed to fetch"),
+              "CSDN 图片上传",
+            ),
+          );
+        }
+        upStatus = result.status;
+        upText = result.text || "";
       }
-      const upText = await upRes.text();
+
       if (/AccessDenied|InvalidAccessKeyId/i.test(upText)) {
         throw new Error(`OSS 拒绝: ${upText.slice(0, 160)}`);
       }
@@ -366,7 +534,7 @@ export function createCsdnAdapter(BaseAdapter) {
         up = JSON.parse(upText);
       } catch {
         throw new Error(
-          `CSDN 图片上传失败: 非 JSON HTTP ${upRes.status}: ${upText.slice(0, 160)}`,
+          `CSDN 图片上传失败: 非 JSON HTTP ${upStatus}: ${upText.slice(0, 160)}`,
         );
       }
       const imageUrl = up?.data?.imageUrl || up?.data?.url;
@@ -416,87 +584,88 @@ export function createCsdnAdapter(BaseAdapter) {
 
     async publish(article, options) {
       try {
-        return await this.withHeaderRules(async () => {
-          if (!this.userInfo) {
-            if (!(await this.hasLoginCookies())) {
-              throw new Error("请先登录 CSDN（打开 editor.csdn.net）");
-            }
-            await this.loadUserInfo();
-          }
+        if (!(await this.hasLoginCookies())) {
+          throw new Error("请先登录 CSDN（打开 editor.csdn.net）");
+        }
+        await this.ensureEditorTab();
+        if (!this.userInfo) {
+          await this.loadUserInfo();
+        }
 
-          let html = article.html || "";
-          let markdown = String(article.markdown || "").trim();
-          if (!html && markdown) {
-            html = markdown
-              .split(/\n\n+/)
-              .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
-              .join("");
-          }
-          if (typeof this.cleanHtml === "function") {
-            html = this.cleanHtml(html, {
-              removeIframes: true,
-              removeSvgImages: true,
-              removeTags: ["qqmusic"],
-              removeAttrs: ["data-reader-unique-id"],
-            });
-          }
-
-          const rehosted = await this.rehostContent(
-            html,
-            markdown,
-            options?.onImageProgress,
-          );
-          html = rehosted.html;
-          markdown = rehosted.markdown || this.htmlToMarkdown(html);
-
-          const path = "/blog-console-api/v3/mdeditor/saveArticle";
-          const headers = await this.signRequest(path, "POST");
-          const res = await this.apiJson(
-            `https://bizapi.csdn.net${path}`,
-            {
-              method: "POST",
-              headers,
-              body: JSON.stringify({
-                title: article.title,
-                markdowncontent: markdown,
-                content: html,
-                readType: "public",
-                level: 0,
-                tags: "",
-                status: 2,
-                categories: "",
-                type: "original",
-                original_link: "",
-                authorized_status: false,
-                not_auto_saved: "1",
-                source: "pc_mdeditor",
-                cover_images: [],
-                cover_type: 1,
-                is_new: 1,
-                vote_id: 0,
-                resource_id: "",
-                pubStatus: "draft",
-                creator_activity_id: "",
-              }),
-            },
-            SAVE_MS,
-            "CSDN 保存草稿",
-          );
-
-          if (res.code !== 200 || !res.data?.id) {
-            throw new Error(res.message || res.msg || "CSDN 保存草稿失败");
-          }
-          const id = res.data.id;
-          return this.createResult(true, {
-            postId: String(id),
-            postUrl: `https://editor.csdn.net/md?articleId=${id}`,
-            draftOnly: options?.draftOnly ?? true,
+        let html = article.html || "";
+        let markdown = String(article.markdown || "").trim();
+        if (!html && markdown) {
+          html = markdown
+            .split(/\n\n+/)
+            .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
+            .join("");
+        }
+        if (typeof this.cleanHtml === "function") {
+          html = this.cleanHtml(html, {
+            removeIframes: true,
+            removeSvgImages: true,
+            removeTags: ["qqmusic"],
+            removeAttrs: ["data-reader-unique-id"],
           });
+        }
+
+        const rehosted = await this.rehostContent(
+          html,
+          markdown,
+          options?.onImageProgress,
+        );
+        html = rehosted.html;
+        markdown = rehosted.markdown || this.htmlToMarkdown(html);
+
+        const path = "/blog-console-api/v3/mdeditor/saveArticle";
+        const headers = await this.signRequest(path, "POST");
+        const res = await this.apiJson(
+          `https://bizapi.csdn.net${path}`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              title: article.title,
+              markdowncontent: markdown,
+              content: html,
+              readType: "public",
+              level: 0,
+              tags: "",
+              status: 2,
+              categories: "",
+              type: "original",
+              original_link: "",
+              authorized_status: false,
+              not_auto_saved: "1",
+              source: "pc_mdeditor",
+              cover_images: [],
+              cover_type: 1,
+              is_new: 1,
+              vote_id: 0,
+              resource_id: "",
+              pubStatus: "draft",
+              creator_activity_id: "",
+            }),
+          },
+          SAVE_MS,
+          "CSDN 保存草稿",
+        );
+
+        if (res.code !== 200 || !res.data?.id) {
+          throw new Error(res.message || res.msg || "CSDN 保存草稿失败");
+        }
+        const id = res.data.id;
+        return this.createResult(true, {
+          postId: String(id),
+          postUrl: `https://editor.csdn.net/md?articleId=${id}`,
+          draftOnly: options?.draftOnly ?? true,
         });
       } catch (error) {
         return this.createResult(false, {
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        await this.closeHiddenEditors();
       }
     }
   };

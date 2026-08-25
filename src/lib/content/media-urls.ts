@@ -1,3 +1,19 @@
+const PUBLIC_CDN_BASE = "https://cdn.dianwu.ai/files";
+
+/** Old Vigma file hosts → cdn.dianwu.ai. */
+export function rewritePublicMediaUrl(url: string): string {
+  return url
+    .replace(/^https?:\/\/files\.vigma\.app(?=\/|$)/i, PUBLIC_CDN_BASE)
+    .replace(/^https?:\/\/api\.vigma\.app\/files(?=\/|$)/i, PUBLIC_CDN_BASE);
+}
+
+export function rewritePublicMediaInText(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/https?:\/\/files\.vigma\.app(?=\/|"|'|$|\s)/gi, PUBLIC_CDN_BASE)
+    .replace(/https?:\/\/api\.vigma\.app\/files(?=\/|"|'|$|\s)/gi, PUBLIC_CDN_BASE);
+}
+
 /** Default local app origin for server-side rewrite (Playwright / API). */
 export function resolvePublicOrigin(explicit?: string | null): string {
   const fromEnv =
@@ -8,16 +24,42 @@ export function resolvePublicOrigin(explicit?: string | null): string {
   return raw.replace(/\/$/, "");
 }
 
+/**
+ * Resolve relative / `../public/` paths and collapse `..` in already-absolute
+ * URLs. Next.js serves files in /public at the site root, so `/public/foo.png`
+ * on our origin becomes `/foo.png`.
+ */
 export function toAbsoluteMediaUrl(src: string, origin: string): string {
   const o = origin.replace(/\/$/, "");
   const s = (src || "").trim();
   if (!s || s.startsWith("data:") || s.startsWith("blob:") || s.startsWith("#")) {
     return s;
   }
-  if (/^https?:\/\//i.test(s)) return s;
-  if (s.startsWith("//")) return `https:${s}`;
-  if (s.startsWith("/")) return `${o}${s}`;
-  return `${o}/${s.replace(/^\.\//, "")}`;
+
+  let href: string;
+  try {
+    if (s.startsWith("//")) {
+      href = new URL(`https:${s}`).href;
+    } else if (/^https?:\/\//i.test(s)) {
+      href = new URL(s).href;
+    } else {
+      href = new URL(s, `${o}/`).href;
+    }
+  } catch {
+    if (s.startsWith("/")) return `${o}${s}`;
+    return `${o}/${s.replace(/^\.\//, "")}`;
+  }
+
+  try {
+    const u = new URL(href);
+    const originHost = new URL(`${o}/`).origin;
+    if (u.origin === originHost) {
+      u.pathname = u.pathname.replace(/^\/public\//, "/");
+    }
+    return rewritePublicMediaUrl(u.href);
+  } catch {
+    return rewritePublicMediaUrl(href);
+  }
 }
 
 function shouldRewriteUrl(url: string): boolean {
@@ -32,7 +74,6 @@ function shouldRewriteUrl(url: string): boolean {
   ) {
     return false;
   }
-  if (/^https?:\/\//i.test(s)) return false;
   return true;
 }
 

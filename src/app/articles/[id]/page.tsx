@@ -1,8 +1,8 @@
-import { ArticleEditor } from "@/components/ArticleEditor";
+import { ArticleEditorClient } from "./ArticleEditorClient";
 
 type Props = { params: Promise<{ id: string }> };
 
 export default async function ArticlePage({ params }: Props) {
   const { id } = await params;
-  return <ArticleEditor id={id} />;
+  return <ArticleEditorClient id={id} />;
 }

@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 一点号 — 基于 mp.yidianzixun.com SPA（/model/Account + /model/Article + /upload）
  * 上游 v2 适配器已私有化；字段按现网 SPA 约定做最小可用草稿保存。
@@ -133,12 +136,13 @@ export function createYidianAdapter(BaseAdapter) {
 
         const title = String(article.title || "").slice(0, 64);
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["yidianzixun.com", "go2yd.com"],
+          {skipPatterns: ["yidianzixun.com", "go2yd.com"],
             onProgress: options?.onImageProgress,
+            platformName: "一点资讯",
           },
         );
 

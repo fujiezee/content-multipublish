@@ -1,0 +1,19 @@
+---
+description: Bump 点物GEO Chrome extension version on every iterative change
+globs: tools/dianwu-geo/**
+alwaysApply: false
+---
+
+# 点物GEO 扩展版本
+
+改 `tools/dianwu-geo/**`（适配器、桥接、规则、SW）时，**同一变更必须 bump** `tools/dianwu-geo/manifest.json` 的 `version`，不要长期停在同一数字。
+
+- patch：修 bug / 文案 → `x.y.Z+1`
+- minor：新平台或新能力 → `x.Y+1.0`
+- major：不兼容大改 → `X+1.0.0`
+
+同步：
+
+1. `tools/dianwu-geo/CHANGELOG.md` 追加条目
+2. 桥接协议有变时 bump `inject-api.js` 的 `versionNumber`
+3. 提醒用户在 `chrome://extensions` 重新加载后核对版本号

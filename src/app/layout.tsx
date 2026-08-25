@@ -1,13 +1,23 @@
 import type { Metadata } from "next";
-import { Nav } from "@/components/Nav";
+import { AppShell } from "@/components/AppShell";
+import { ServiceWorkerCleanup } from "@/components/ServiceWorkerCleanup";
+import { PRODUCT_NAME, SITE_BRAND } from "@/lib/billing/plans";
 import "./globals.css";
+
+const SITE_TITLE = `点物 · ${PRODUCT_NAME}`;
 
 export const metadata: Metadata = {
   title: {
-    default: "文章编辑",
-    template: "%s · 文章编辑",
+    default: SITE_TITLE,
+    template: `%s · ${SITE_BRAND}`,
   },
-  description: "本机多平台文章同步：Chrome 扩展草稿分发优先，本机 Playwright 半自动兜底",
+  description:
+    "点物 · AI智能内容营销系统。写文章、做视频，拿去发。别人问起你时，答案里有你。覆盖豆包、DeepSeek，发完能看 AI 搜索排第几。",
+  applicationName: SITE_BRAND,
+  icons: {
+    icon: [{ url: "/file.svg", type: "image/svg+xml" }],
+    shortcut: "/file.svg",
+  },
 };
 
 export default function RootLayout({
@@ -18,8 +28,8 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className="h-full" suppressHydrationWarning>
       <body className="min-h-full antialiased" suppressHydrationWarning>
-        <Nav />
-        <main className="shell py-8 pb-16">{children}</main>
+        <ServiceWorkerCleanup />
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

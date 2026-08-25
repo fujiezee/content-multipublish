@@ -1,3 +1,4 @@
+import { createDianwuDirectoryAdapter } from "@/lib/draft-adapters/dianwu";
 import { createSegmentfaultDraftAdapter } from "@/lib/draft-adapters/segmentfault";
 import type { DraftAdapter } from "@/lib/draft-adapters/types";
 import type { PlatformId } from "@/lib/types";
@@ -19,6 +20,8 @@ export function getDraftAdapter(platform: PlatformId): DraftAdapter | null {
   switch (platform) {
     case "segmentfault":
       return createSegmentfaultDraftAdapter();
+    case "dianwu":
+      return createDianwuDirectoryAdapter();
     default:
       return null;
   }

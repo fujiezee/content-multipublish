@@ -37,9 +37,12 @@
     bilibili: "knowledge",
     weibo: "social",
     xiaohongshu: "social",
-    douyin: "social",
+    douyin: "douyin",
     x: "social",
     smzdm: "social",
+    shunqi: "media",
+    shunqi_product: "media",
+    bafang: "media",
     weixin: "wechat",
     tencentcloud: "cloud",
     aliyun: "cloud",
@@ -72,6 +75,21 @@
     };
   }
 
+  function pickDouyinArticle(variants, fallback) {
+    const own = variants.douyin || {};
+    const media = variants.media || {};
+    const merged = {
+      ...media,
+      ...own,
+      title: own.title || media.title,
+      content: own.content || own.html || media.content || media.html,
+      html: own.html || own.content || media.html || media.content,
+      markdown: own.markdown || media.markdown,
+      cover: own.cover || own.thumb || media.cover || media.thumb,
+    };
+    return pickArticle(merged, fallback);
+  }
+
   function hasVariantBody(variant) {
     return Boolean(
       variant && String(variant.content || variant.html || "").trim(),
@@ -81,18 +99,56 @@
   const orig = chrome.runtime.sendMessage.bind(chrome.runtime);
 
   /** Promise-based send that always resolves (never leaves await hanging). */
+  function readResultsFromStorage(platforms) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get("activeSyncState", (data) => {
+          try {
+            const results = data?.activeSyncState?.results;
+            if (!Array.isArray(results) || !results.length) {
+              resolve(null);
+              return;
+            }
+            const wanted = new Set(
+              (platforms || []).map((p) => String(p).toLowerCase()),
+            );
+            const matched = results.filter((row) =>
+              wanted.has(String(row?.platform || "").toLowerCase()),
+            );
+            resolve(matched.length ? matched : results);
+          } catch {
+            resolve(null);
+          }
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
   function sendRouted(payload) {
+    const platforms = Array.isArray(payload?.platforms) ? payload.platforms : [];
     return new Promise((resolve) => {
       try {
         orig({ type: "SYNC_ARTICLE", payload }, (resp) => {
-          if (chrome.runtime.lastError) {
-            resolve({
+          const finish = (out) => resolve(out);
+          const handleLastError = async () => {
+            const fromStorage = await readResultsFromStorage(platforms);
+            if (fromStorage?.length) {
+              finish({ results: fromStorage });
+              return;
+            }
+            finish({
               results: [],
-              error: chrome.runtime.lastError.message,
+              error: chrome.runtime.lastError?.message || "扩展同步失败",
             });
+          };
+
+          if (chrome.runtime.lastError) {
+            void handleLastError();
             return;
           }
-          resolve(
+          finish(
             resp && typeof resp === "object"
               ? resp
               : { results: [], error: "扩展无响应" },
@@ -140,7 +196,11 @@
 
     // No family variants → single routed call (same article for all).
     if (!usable.length) {
-      return sendRouted({ ...message.payload, _familyRouted: true });
+      return sendRouted({
+        ...message.payload,
+        article: baseArticle,
+        _familyRouted: true,
+      });
     }
 
     const allResults = [];
@@ -150,7 +210,10 @@
     for (let i = 0; i < entries.length; i += 1) {
       const [, plats] = entries[i];
       const family = entries[i][0];
-      const article = pickArticle(variants[family], baseArticle);
+      const article =
+        family === "douyin"
+          ? pickDouyinArticle(variants, baseArticle)
+          : pickArticle(variants[family], baseArticle);
       const resp = await sendRouted({
         ...message.payload,
         article,

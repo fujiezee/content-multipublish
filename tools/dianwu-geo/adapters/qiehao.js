@@ -1,11 +1,24 @@
 /**
  * 企鹅号（腾讯内容开放平台 om.qq.com）
  *
- * 登录：勿用 /mindex/userAuth/getLoginState（那是 QQ 扫码组件用的）。
- * 正确路径：创作页 HTML 里的 g_userInfo、或 /article/* 需登录接口、或已开标签页读 window.g_userInfo。
+ * 登录：勿用 /mindex/userAuth/getLoginState，也勿打开 /userAuth/index
+ *（扫码页会把已登录的 om 会话踢掉）。
+ * 正确路径：已开创作页读 g_userInfo、/article/* 需登录接口、或 QQ/om Cookie。
  * 草稿：POST /article/save；失败则标签页 DOM 点「存草稿」。
  */
 import { getCookieValue } from "./_cookie.js";
+import {
+  assertHostedImages,
+  extractImageSrcs,
+} from "./_images.js";
+
+const OM_IMAGE_HOSTS = [
+  "gtimg.cn",
+  "gtimg.com",
+  "qpic.cn",
+  "inews.qq.com",
+  "om.qq.com",
+];
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -22,6 +35,19 @@ export function createQiehaoAdapter(BaseAdapter) {
 
     /** @type {{ userId: string; username: string; avatar?: string; mediaId?: string } | null} */
     account = null;
+
+    /** @type {number | null} */
+    omUploadTabId = null;
+
+    createdOmUploadTab = false;
+
+    imageUploadUrls() {
+      return [
+        "https://om.qq.com/image/orginalupload",
+        "https://om.qq.com/image/orginalupload?appkey=1&isRetImgAttr=1&from=article",
+        "https://om.qq.com/image/archscaleupload?isRetImgAttr=1",
+      ];
+    }
 
     isLoginHtml(text, finalUrl = "") {
       if (/userAuth|ptlogin|登录-腾讯内容开放平台/i.test(finalUrl)) return true;
@@ -270,7 +296,17 @@ export function createQiehaoAdapter(BaseAdapter) {
     }
 
     async hasOmSessionCookies() {
-      const names = ["uin", "skey", "p_skey", "om_token", "RK", "pt4_token"];
+      const names = [
+        "omtoken",
+        "omaccesstoken",
+        "userid",
+        "om_token",
+        "uin",
+        "skey",
+        "p_skey",
+        "RK",
+        "pt4_token",
+      ];
       for (const name of names) {
         const v = await getCookieValue(
           this.runtime,
@@ -321,12 +357,18 @@ export function createQiehaoAdapter(BaseAdapter) {
           };
         }
 
-        // 4) cookies alone are weak — still not enough without creator session
+        // 4) QQ/om cookies: treat as logged in. Calling this "not ready"
+        // used to make the site open /userAuth/index and kick the session.
         if (await this.hasOmSessionCookies()) {
+          this.account = {
+            userId: "session",
+            username: "企鹅号",
+            mediaId: undefined,
+          };
           return {
-            isAuthenticated: false,
-            error:
-              "检测到 QQ Cookie，但企鹅号创作后台未就绪。请打开 https://om.qq.com/article/articlePublish 确认已进后台后再同步",
+            isAuthenticated: true,
+            userId: "session",
+            username: "企鹅号",
           };
         }
 
@@ -346,44 +388,589 @@ export function createQiehaoAdapter(BaseAdapter) {
       return this.account;
     }
 
-    async uploadImageByUrl(src) {
-      const imageResponse = await this.runtime.fetch(src);
-      if (!imageResponse.ok) throw new Error(`图片下载失败: ${src}`);
-      const blob = await imageResponse.blob();
-      const formData = new FormData();
-      formData.append("file", blob, `${Date.now()}.jpg`);
-      formData.append("upfile", blob, `${Date.now()}.jpg`);
+    isOmImageHost(url) {
+      return /(?:gtimg\.cn|gtimg\.com|qpic\.cn|inews\.qq\.com|om\.qq\.com)/i.test(
+        String(url || ""),
+      );
+    }
 
-      const uploadUrls = [
-        "https://om.qq.com/image/upload",
-        "https://om.qq.com/article/uploadImage",
-        "https://om.qq.com/upload/image",
-      ];
+    extractCdnUrl(text) {
+      const m = String(text || "").match(
+        /https?:\/\/[^"'\\\s>]+(?:gtimg\.(?:cn|com)|qpic\.cn|inews\.qq\.com)[^"'\\\s>]*/i,
+      );
+      return m?.[0] || null;
+    }
 
-      for (const url of uploadUrls) {
+    pickUploadedUrl(res) {
+      const found = [];
+      const walk = (value, depth = 0) => {
+        if (value == null || depth > 8) return;
+        if (typeof value === "string") {
+          if (/^https?:\/\//i.test(value) && this.isOmImageHost(value)) {
+            found.push(value);
+          }
+          return;
+        }
+        if (Array.isArray(value)) {
+          for (const item of value) walk(item, depth + 1);
+          return;
+        }
+        if (typeof value === "object") {
+          const preferred = [
+            value.imgurl,
+            value.url,
+            value.src,
+            value.image_url,
+            value.size?.[0]?.imgurl,
+            value.size?.[641]?.imgurl,
+            value.size?.["0"]?.imgurl,
+            value.size?.["641"]?.imgurl,
+          ];
+          for (const item of preferred) walk(item, depth + 1);
+          if (value.size && typeof value.size === "object") {
+            walk(value.size, depth + 1);
+          }
+          if (value.data) walk(value.data, depth + 1);
+        }
+      };
+      walk(res);
+      return found[0] || null;
+    }
+
+    bytesToBase64(bytes) {
+      const chunk = 0x8000;
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      return btoa(binary);
+    }
+
+    sniffImageType(bytes) {
+      if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50) {
+        return "image/png";
+      }
+      if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+        return "image/jpeg";
+      }
+      if (
+        bytes.length >= 6 &&
+        bytes[0] === 0x47 &&
+        bytes[1] === 0x49 &&
+        bytes[2] === 0x46
+      ) {
+        return "image/gif";
+      }
+      if (
+        bytes.length >= 12 &&
+        bytes[0] === 0x52 &&
+        bytes[8] === 0x57 &&
+        bytes[9] === 0x45
+      ) {
+        return "image/webp";
+      }
+      return "";
+    }
+
+    async downloadImageBlob(src) {
+      const url = String(src || "").trim();
+      if (url.startsWith("data:")) {
+        const blob = await fetch(url).then((r) => r.blob());
+        if (!blob.size) throw new Error("data URI 图片为空");
+        return blob;
+      }
+      const res = await this.runtime.fetch(url, { credentials: "omit" });
+      if (!res.ok) {
+        throw new Error(
+          `图片下载失败 HTTP ${res.status}: ${url.slice(0, 96)}`,
+        );
+      }
+      const blob = await res.blob();
+      if (!blob.size) {
+        throw new Error(`图片下载为空: ${url.slice(0, 96)}`);
+      }
+      return blob;
+    }
+
+    isUploadLoginBody(text, status, finalUrl = "") {
+      if (this.isLoginHtml(text, finalUrl)) return true;
+      if (/userAuth|\/login/i.test(finalUrl)) return true;
+      if (status === 302 || status === 301 || status === 303 || status === 307) {
+        return true;
+      }
+      const head = String(text || "").replace(/\s+/g, " ").slice(0, 80);
+      return /<!DOCTYPE html/i.test(head) || /<html[\s>]/i.test(head);
+    }
+
+    explainUploadFailure(text, status, finalUrl = "") {
+      if (this.isUploadLoginBody(text, status, finalUrl)) {
+        return "企鹅号图床要登录态，请打开 https://om.qq.com/article/articlePublish 刷新确认已进后台后再同步";
+      }
+      const res = this.parseJsonSafe(text);
+      const msg =
+        res?.response?.msg ||
+        res?.msg ||
+        res?.message ||
+        res?.state;
+      if (msg && String(msg) !== "success!") return String(msg);
+      const snippet = String(text || "").replace(/\s+/g, " ").slice(0, 140);
+      if (snippet) return snippet;
+      return `HTTP ${status || "?"} 空响应`;
+    }
+
+    parseUploadResult(text, status, finalUrl = "") {
+      const raw = String(text || "");
+      const res = this.parseJsonSafe(raw);
+      const out =
+        this.pickUploadedUrl(res) ||
+        this.extractCdnUrl(raw);
+      if (out && this.isOmImageHost(out)) {
+        return { url: out.replace(/^http:\/\//i, "https://") };
+      }
+      throw new Error(
+        `企鹅号图片上传失败: ${this.explainUploadFailure(raw, status, finalUrl)}`,
+      );
+    }
+
+    appendUploadFields(formData, file, filename, mime) {
+      formData.append("Filedata", file, filename);
+      formData.append("Filename", filename);
+      formData.append("subModule", "article_image");
+      formData.append("id", `WU_FILE_${Date.now()}`);
+      formData.append("name", filename);
+      formData.append("type", mime);
+      formData.append("lastModifiedDate", new Date().toString());
+      formData.append("appkey", "1");
+      formData.append("isRetImgAttr", "1");
+      formData.append("from", "article");
+    }
+
+    isOmEditorUrl(url) {
+      return (
+        /om\.qq\.com/i.test(url || "") &&
+        !/userAuth|ptlogin|\/login/i.test(url || "")
+      );
+    }
+
+    async waitOmEditorReady(tabId, timeoutMs = 18_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        let tab;
         try {
-          const response = await this.runtime.fetch(url, {
+          tab = await chrome.tabs.get(tabId);
+        } catch {
+          throw new Error("企鹅号创作页已关闭");
+        }
+        const url = tab.url || tab.pendingUrl || "";
+        if (/userAuth|ptlogin|\/login/i.test(url)) {
+          throw new Error(
+            "企鹅号创作页跳到登录，请先在浏览器打开 https://om.qq.com/article/articlePublish 登录后再同步",
+          );
+        }
+        if (this.isOmEditorUrl(url) && tab.status === "complete") {
+          const [{ result } = {}] = await chrome.scripting
+            .executeScript({
+              target: { tabId },
+              world: "MAIN",
+              func: () => {
+                const info = window.g_userInfo || null;
+                if (info?.mediaId || info?.mediaName) return "ok";
+                if (/userAuth|ptlogin|登录-腾讯内容开放平台/i.test(
+                  document.title + location.href,
+                )) {
+                  return "login";
+                }
+                return "shell";
+              },
+            })
+            .catch(() => [{}]);
+          if (result === "login") {
+            throw new Error(
+              "企鹅号创作页未登录，请先打开 https://om.qq.com/article/articlePublish 登录后再同步",
+            );
+          }
+          if (result === "ok" || result === "shell") {
+            await new Promise((r) => setTimeout(r, 400));
+            return tabId;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      throw new Error("企鹅号创作页加载超时");
+    }
+
+    async ensureOmUploadTab() {
+      if (this.omUploadTabId) {
+        try {
+          const tab = await chrome.tabs.get(this.omUploadTabId);
+          if (tab?.id && this.isOmEditorUrl(tab.url || "")) {
+            return tab.id;
+          }
+        } catch {
+          this.omUploadTabId = null;
+        }
+      }
+      if (
+        typeof chrome === "undefined" ||
+        !chrome.tabs?.query ||
+        !chrome.scripting?.executeScript
+      ) {
+        throw new Error("无 tabs/scripting，无法页内上传");
+      }
+      const tabs = await chrome.tabs.query({ url: ["*://om.qq.com/*"] });
+      let tab =
+        tabs.find((t) => t.id && /articlePublish/i.test(t.url || "")) ||
+        tabs.find((t) => t.id && this.isOmEditorUrl(t.url || ""));
+      if (!tab?.id) {
+        tab = await chrome.tabs.create({
+          url: "https://om.qq.com/article/articlePublish",
+          active: true,
+        });
+        this.createdOmUploadTab = true;
+      }
+      this.omUploadTabId = tab.id;
+      await this.waitOmEditorReady(tab.id);
+      return tab.id;
+    }
+
+    async closeOmUploadTabIfCreated() {
+      if (this.createdOmUploadTab && this.omUploadTabId) {
+        await chrome.tabs.remove(this.omUploadTabId).catch(() => undefined);
+      }
+      this.createdOmUploadTab = false;
+      this.omUploadTabId = null;
+    }
+
+    async storeUploadPayload(bytes, filename, mime) {
+      const key = `om_img_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      await chrome.storage.local.set({
+        [key]: {
+          b64: this.bytesToBase64(bytes),
+          name: filename,
+          type: mime,
+        },
+      });
+      return key;
+    }
+
+    async clearUploadPayload(key) {
+      if (key) await chrome.storage.local.remove(key).catch(() => undefined);
+    }
+
+    async uploadImageBinary(blob) {
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      if (!bytes.length) throw new Error("图片下载为空");
+      const sniffed = this.sniffImageType(bytes);
+      if (!sniffed) {
+        throw new Error("下载结果不是图片（可能被拦或返回了登录页）");
+      }
+      const mime =
+        blob.type && blob.type.startsWith("image/") ? blob.type : sniffed;
+      const uploadMime = mime === "image/webp" ? "image/jpeg" : mime;
+      const ext = /png/i.test(uploadMime)
+        ? "png"
+        : /gif/i.test(uploadMime)
+          ? "gif"
+          : "jpg";
+      const filename = `${Date.now()}.${ext}`;
+
+      const page = await this.uploadViaOmTab(bytes, filename, uploadMime);
+      if (page?.url) return page;
+
+      const typed = new Blob([bytes], { type: uploadMime });
+      let lastError = page?.error || "企鹅号图片上传失败";
+      for (const uploadUrl of this.imageUploadUrls()) {
+        try {
+          const formData = new FormData();
+          this.appendUploadFields(formData, typed, filename, uploadMime);
+          const response = await this.runtime.fetch(uploadUrl, {
             method: "POST",
             credentials: "include",
             headers: {
-              Referer: "https://om.qq.com/article/articlePublish",
+              Accept: "application/json, text/javascript, */*; q=0.01",
+              "X-Requested-With": "XMLHttpRequest",
             },
             body: formData,
           });
           const text = await response.text();
-          const res = this.parseJsonSafe(text);
-          const out =
-            res?.data?.url ||
-            res?.url ||
-            res?.data?.imgurl ||
-            res?.imgurl ||
-            res?.data?.src;
-          if (out) return { url: out };
-        } catch {
-          // next
+          return this.parseUploadResult(
+            text,
+            response.status,
+            response.url || uploadUrl,
+          );
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
         }
       }
-      return { url: src };
+      throw new Error(lastError);
+    }
+
+    async uploadViaOmTab(bytes, filename, mime) {
+      if (
+        typeof chrome === "undefined" ||
+        !chrome.tabs?.query ||
+        !chrome.scripting?.executeScript ||
+        !chrome.storage?.local
+      ) {
+        return { error: "无 tabs/scripting，无法页内上传" };
+      }
+      const key = await this.storeUploadPayload(bytes, filename, mime);
+      try {
+        const tabId = await this.ensureOmUploadTab();
+        const xhrHit = await this.uploadViaPageXhr(tabId, key);
+        if (xhrHit?.url) return xhrHit;
+        const inputHit = await this.uploadViaEditorInput(tabId, key);
+        if (inputHit?.url) return inputHit;
+        return {
+          error:
+            inputHit?.error ||
+            xhrHit?.error ||
+            "页内上传无返回",
+        };
+      } catch (err) {
+        return {
+          error: err instanceof Error ? err.message : String(err),
+        };
+      } finally {
+        await this.clearUploadPayload(key);
+      }
+    }
+
+    async uploadViaPageXhr(tabId, key) {
+      const [{ result } = {}] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: (storageKey, urls) =>
+          new Promise((resolve) => {
+            chrome.storage.local.get(storageKey, (bag) => {
+              const payload = bag?.[storageKey];
+              if (!payload?.b64) {
+                resolve({ status: 0, text: "页内读图失败", url: "" });
+                return;
+              }
+              const binary = Uint8Array.from(atob(payload.b64), (c) =>
+                c.charCodeAt(0),
+              );
+              const blob = new Blob([binary], {
+                type: payload.type || "image/jpeg",
+              });
+              const post = (url) =>
+                new Promise((done) => {
+                  const fd = new FormData();
+                  fd.append("Filedata", blob, payload.name);
+                  fd.append("Filename", payload.name);
+                  fd.append("subModule", "article_image");
+                  fd.append("id", `WU_FILE_${Date.now()}`);
+                  fd.append("name", payload.name);
+                  fd.append("type", payload.type || "image/jpeg");
+                  fd.append("lastModifiedDate", new Date().toString());
+                  fd.append("appkey", "1");
+                  fd.append("isRetImgAttr", "1");
+                  fd.append("from", "article");
+                  const xhr = new XMLHttpRequest();
+                  xhr.open("POST", url, true);
+                  xhr.withCredentials = true;
+                  xhr.timeout = 30_000;
+                  xhr.onload = () =>
+                    done({
+                      status: xhr.status,
+                      text: String(xhr.responseText || ""),
+                      url: xhr.responseURL || url,
+                    });
+                  xhr.onerror = () =>
+                    done({ status: 0, text: "Failed to fetch", url });
+                  xhr.ontimeout = () =>
+                    done({ status: 0, text: "企鹅号图床上传超时", url });
+                  xhr.send(fd);
+                });
+              (async () => {
+                let last = { status: 0, text: "页内上传无返回", url: "" };
+                for (const url of urls) {
+                  last = await post(url);
+                  if (last.text && last.status >= 200 && last.status < 300) {
+                    resolve(last);
+                    return;
+                  }
+                }
+                resolve(last);
+              })().catch((err) =>
+                resolve({
+                  status: 0,
+                  text: err instanceof Error ? err.message : String(err),
+                  url: "",
+                }),
+              );
+            });
+          }),
+        args: [key, this.imageUploadUrls()],
+      });
+      if (!result?.text && !result?.status) {
+        return { error: "页内上传无返回" };
+      }
+      try {
+        return this.parseUploadResult(result.text, result.status, result.url);
+      } catch (err) {
+        return {
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    async uploadViaEditorInput(tabId, key) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: () => {
+          if (window.__dwOmHooked) return;
+          window.__dwOmHooked = true;
+          window.__dwOmUploads = [];
+          const open = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            this.__dwOmUrl = String(url || "");
+            return open.call(this, method, url, ...rest);
+          };
+          const send = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.send = function (body) {
+            if (/\/image\//i.test(this.__dwOmUrl || "")) {
+              this.addEventListener("load", () => {
+                window.__dwOmUploads.push({
+                  status: this.status,
+                  text: String(this.responseText || ""),
+                  url: this.responseURL || this.__dwOmUrl,
+                });
+              });
+            }
+            return send.call(this, body);
+          };
+        },
+      });
+
+      const [{ result: dispatched } = {}] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: (storageKey) =>
+          new Promise((resolve) => {
+            chrome.storage.local.get(storageKey, (bag) => {
+              const payload = bag?.[storageKey];
+              if (!payload?.b64) {
+                resolve({ ok: false, error: "页内读图失败" });
+                return;
+              }
+              const binary = Uint8Array.from(atob(payload.b64), (c) =>
+                c.charCodeAt(0),
+              );
+              const file = new File([binary], payload.name, {
+                type: payload.type || "image/jpeg",
+              });
+              const inputs = [
+                ...document.querySelectorAll(
+                  'input[type="file"][accept*="image"], input[type="file"][name="Filedata"], input[type="file"]',
+                ),
+              ];
+              const input =
+                inputs.find((el) =>
+                  /image|filedata/i.test(
+                    `${el.accept || ""} ${el.name || ""} ${el.id || ""}`,
+                  ),
+                ) || inputs[0];
+              if (!input) {
+                resolve({ ok: false, error: "创作页没有图片上传框" });
+                return;
+              }
+              const dt = new DataTransfer();
+              dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+              resolve({ ok: true });
+            });
+          }),
+        args: [key],
+      });
+      if (!dispatched?.ok) {
+        return { error: dispatched?.error || "无法触发创作页上传" };
+      }
+
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const [{ result } = {}] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: () => {
+            const hits = window.__dwOmUploads || [];
+            return hits[hits.length - 1] || null;
+          },
+        });
+        if (result?.text || result?.status) {
+          try {
+            return this.parseUploadResult(
+              result.text,
+              result.status,
+              result.url,
+            );
+          } catch (err) {
+            return {
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+        const [{ result: img } = {}] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: () => {
+            const node = document.querySelector(
+              'img[src*="gtimg"], img[src*="qpic.cn"], img[src*="inews.qq.com"]',
+            );
+            return node?.src || "";
+          },
+        });
+        if (img && this.isOmImageHost(img)) {
+          return { url: img.replace(/^http:\/\//i, "https://") };
+        }
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      return { error: "创作页上传超时" };
+    }
+
+    async uploadImageByUrl(src) {
+      const url = String(src || "").trim();
+      if (!url) throw new Error("空图片地址");
+      if (this.isOmImageHost(url)) return { url };
+      return this.uploadImageBinary(await this.downloadImageBlob(url));
+    }
+
+    async rehostContentImages(content, options) {
+      const html = content || "";
+      const srcs = [...new Set(extractImageSrcs(html))];
+      const pending = srcs.filter(
+        (src) => src && !src.startsWith("data:") && !this.isOmImageHost(src),
+      );
+      let out = html;
+      let done = 0;
+      try {
+        for (const src of pending) {
+          const uploaded = await this.uploadImageByUrl(src);
+          if (!uploaded?.url || !this.isOmImageHost(uploaded.url)) {
+            throw new Error(
+              `企鹅号图床未返回平台地址（${String(src).slice(0, 80)}）`,
+            );
+          }
+          out = out.split(src).join(uploaded.url);
+          done += 1;
+          options?.onImageProgress?.({
+            current: done,
+            total: pending.length,
+            src,
+          });
+          if (done < pending.length) {
+            await new Promise((r) => setTimeout(r, 280));
+          }
+        }
+        assertHostedImages(out, OM_IMAGE_HOSTS, "企鹅号");
+        return out;
+      } finally {
+        await this.closeOmUploadTabIfCreated();
+      }
     }
 
     buildSavePayload(title, content, mediaId) {
@@ -552,13 +1139,15 @@ export function createQiehaoAdapter(BaseAdapter) {
         try {
           account = await this.ensureAccount();
         } catch (authErr) {
-          // 已登录用户偶发鉴权接口 HTML 化：仍尝试保存/DOM
+          // 已登录用户偶发鉴权接口 HTML 化：仍尝试保存/DOM（先上传图床）
           const msg =
             authErr instanceof Error ? authErr.message : String(authErr);
-          const dom = await this.saveViaDom(
-            String(article.title || "").trim().slice(0, 64),
+          const title = String(article.title || "").trim().slice(0, 64);
+          const content = await this.rehostContentImages(
             article.html || article.markdown || "",
+            options,
           );
+          const dom = await this.saveViaDom(title, content);
           if (dom.ok) {
             return this.createResult(true, {
               postUrl:
@@ -575,14 +1164,9 @@ export function createQiehaoAdapter(BaseAdapter) {
           throw new Error("企鹅号标题需 5–64 字");
         }
 
-        let content = article.html || article.markdown || "";
-        content = await this.processImages(
-          content,
-          (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["om.qq.com", "gtimg.cn", "qpic.cn", "inews.qq.com"],
-            onProgress: options?.onImageProgress,
-          },
+        const content = await this.rehostContentImages(
+          article.html || article.markdown || "",
+          options,
         );
 
         const body = this.buildSavePayload(

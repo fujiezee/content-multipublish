@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { ExtensionInstall } from "@/components/ExtensionInstall";
+import {
+  LATEST_EXTENSION_VERSION,
+  extensionDownloadUrl,
+} from "@/lib/extension-release";
 
 type TokenRow = {
   id: string;
@@ -56,6 +62,10 @@ export default function SettingsPage() {
         body: JSON.stringify({ email, password, displayName }),
       });
       const data = await res.json();
+      if (data.needsVerify) {
+        setMessage(data.message || "请到邮箱点开激活链接后再登录");
+        return;
+      }
       if (!res.ok) throw new Error(data.error || "注册失败");
       setMessage("注册成功");
       await refresh();
@@ -76,6 +86,10 @@ export default function SettingsPage() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
+      if (data.needsVerify) {
+        setMessage(data.message || data.error || "请先激活邮箱");
+        return;
+      }
       if (!res.ok) throw new Error(data.error || "登录失败");
       setMessage("登录成功");
       await refresh();
@@ -123,15 +137,27 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="shell space-y-6 py-8">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">工作区与扩展绑定</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
-          SaaS 多租户：登录后生成扩展 Token；扩展用 Token 绑定本工作区。
-          {authRequired
-            ? " 当前已开启 AUTH_REQUIRED。"
-            : " 本地模式可不登录，仍可生成绑定 Token。"}
-        </p>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">工作区与扩展绑定</h1>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              登录注册在右上角。发到自己的号，装 Chrome 扩展即可。模型 API 与计价见{" "}
+              <Link href="/api-hub" className="underline">
+                API
+              </Link>
+              。
+            </p>
+          </div>
+          <a
+            className="btn btn-primary"
+            href={extensionDownloadUrl()}
+            download={`dianwu-geo-${LATEST_EXTENSION_VERSION}.zip`}
+          >
+            下载扩展包 v{LATEST_EXTENSION_VERSION}
+          </a>
+        </div>
       </div>
 
       {message && (
@@ -200,7 +226,7 @@ export default function SettingsPage() {
           <div>
             <h2 className="text-lg font-medium">扩展绑定 Token</h2>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              在扩展 popup「CLI / MCP」旁或 chrome.storage.local.saasToken 填入
+              网页发稿不需要这项。扩展已默认对接 https://dianwu.ai，装好后打开网站点同步/发布即可。
             </p>
           </div>
           <button
@@ -244,16 +270,7 @@ export default function SettingsPage() {
         </ul>
       </div>
 
-      <div className="card space-y-2 p-5 text-sm text-[var(--muted)]">
-        <h2 className="text-lg font-medium text-[var(--ink)]">扩展安装</h2>
-        <p>
-          开发者模式加载仓库内 <code>tools/dianwu-geo</code>（当前 2.6.0+）。上架
-          Chrome Web Store 或企业私载时保持同一签名与协议号。
-        </p>
-        <p>
-          详见 <code>tools/dianwu-geo/DISTRIBUTION.md</code>
-        </p>
-      </div>
+      <ExtensionInstall />
     </div>
   );
 }

@@ -22,6 +22,9 @@ import { weixinPublisher } from "@/lib/publishers/weixin";
 import { woshipmPublisher } from "@/lib/publishers/woshipm";
 import { xPublisher } from "@/lib/publishers/x";
 import { xiaohongshuPublisher } from "@/lib/publishers/xiaohongshu";
+import { shunqiPublisher } from "@/lib/publishers/shunqi";
+import { shunqiProductPublisher } from "@/lib/publishers/shunqi-product";
+import { bafangPublisher } from "@/lib/publishers/bafang";
 import { xueqiuPublisher } from "@/lib/publishers/xueqiu";
 import { yidianPublisher } from "@/lib/publishers/yidian";
 import { yuquePublisher } from "@/lib/publishers/yuque";
@@ -38,6 +41,7 @@ import { zhongqingPublisher } from "@/lib/publishers/zhongqing";
 import { tencentcloudPublisher } from "@/lib/publishers/tencentcloud";
 import { aliyunPublisher } from "@/lib/publishers/aliyun";
 import { huaweicloudPublisher } from "@/lib/publishers/huaweicloud";
+import { dianwuPublisher } from "@/lib/publishers/dianwu";
 import type { PlatformPublisher } from "@/lib/publishers/types";
 import type { PlatformId } from "@/lib/types";
 
@@ -65,6 +69,9 @@ const registry: Record<PlatformId, PlatformPublisher> = {
   xueqiu: xueqiuPublisher,
   sohufocus: sohufocusPublisher,
   xiaohongshu: xiaohongshuPublisher,
+  shunqi: shunqiPublisher,
+  shunqi_product: shunqiProductPublisher,
+  bafang: bafangPublisher,
   douyin: douyinPublisher,
   netease: neteasePublisher,
   smzdm: smzdmPublisher,
@@ -82,6 +89,7 @@ const registry: Record<PlatformId, PlatformPublisher> = {
   tencentcloud: tencentcloudPublisher,
   aliyun: aliyunPublisher,
   huaweicloud: huaweicloudPublisher,
+  dianwu: dianwuPublisher,
 };
 
 export function getPublisher(platform: PlatformId): PlatformPublisher {

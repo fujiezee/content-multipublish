@@ -128,6 +128,21 @@ export const PLATFORM_ICONS: Record<PlatformId, PlatformIconMeta> = {
     color: "#ff2442",
     mark: "红",
   },
+  shunqi: {
+    icon: "https://www.11467.com/favicon.ico",
+    color: "#c62828",
+    mark: "顺",
+  },
+  shunqi_product: {
+    icon: "https://www.11467.com/favicon.ico",
+    color: "#b71c1c",
+    mark: "产",
+  },
+  bafang: {
+    icon: "https://www.b2b168.com/favicon.ico",
+    color: "#e65100",
+    mark: "八",
+  },
   douyin: {
     icon: "https://lf1-cdn-tos.bytegoofy.com/goofy/ies/douyin_web/public/favicon.ico",
     color: "#111111",
@@ -212,6 +227,11 @@ export const PLATFORM_ICONS: Record<PlatformId, PlatformIconMeta> = {
     icon: "https://bbs.huaweicloud.com/favicon.ico",
     color: "#cf0a2c",
     mark: "华",
+  },
+  dianwu: {
+    icon: "https://dianwu.ai/favicon.ico",
+    color: "#e8c56a",
+    mark: "点",
   },
 };
 

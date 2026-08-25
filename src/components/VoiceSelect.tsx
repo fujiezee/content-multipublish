@@ -1,16 +1,16 @@
 "use client";
 
 import {
+  SearchSelect,
+  type SearchSelectItem,
+} from "@/components/SearchSelect";
+import {
+  CUSTOM_VOICE_GROUP,
   TTS_VOICE_OPTIONS,
   type TtsVoiceGroup,
 } from "@/lib/ai/tts-voice-ids";
 
-export type VoiceSelectOption = {
-  id: string;
-  label: string;
-  hint?: string;
-  group?: string;
-};
+export type VoiceSelectOption = SearchSelectItem;
 
 type Props = {
   value: string;
@@ -21,7 +21,15 @@ type Props = {
   onChange: (next: string) => void;
 };
 
-const GROUPS: TtsVoiceGroup[] = ["角色女", "角色男", "旁白", "口音"];
+const GROUPS: TtsVoiceGroup[] = [
+  CUSTOM_VOICE_GROUP,
+  "角色女",
+  "角色男",
+  "老年人",
+  "旁白",
+  "卡通",
+  "口音",
+];
 
 export function VoiceSelect({
   value,
@@ -31,37 +39,18 @@ export function VoiceSelect({
   className,
   onChange,
 }: Props) {
-  const list = voices?.length ? voices : TTS_VOICE_OPTIONS;
-  const grouped = GROUPS.map((group) => ({
-    group,
-    items: list.filter((v) => (v.group || "") === group),
-  })).filter((row) => row.items.length > 0);
-  const loose = list.filter((v) => !v.group);
-
+  const items = voices?.length ? voices : TTS_VOICE_OPTIONS;
   return (
-    <select
-      className={className || "field"}
+    <SearchSelect
       value={value}
+      items={items}
+      groups={GROUPS}
       disabled={disabled}
-      title={title || list.find((v) => v.id === value)?.hint || "音色"}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {grouped.length
-        ? grouped.map((row) => (
-            <optgroup key={row.group} label={row.group}>
-              {row.items.map((v) => (
-                <option key={v.id} value={v.id} title={v.hint}>
-                  {v.label}
-                </option>
-              ))}
-            </optgroup>
-          ))
-        : null}
-      {loose.map((v) => (
-        <option key={v.id} value={v.id} title={v.hint}>
-          {v.label}
-        </option>
-      ))}
-    </select>
+      title={title}
+      className={className}
+      placeholder="选音色"
+      searchPlaceholder="搜音色、卡通、老年、口音"
+      onChange={onChange}
+    />
   );
 }

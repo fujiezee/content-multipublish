@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 慕课手记 — Wechatsync v2 imooc.ts 移植
  */
@@ -84,12 +87,13 @@ export function createImoocAdapter(BaseAdapter) {
     async publish(article, options) {
       try {
         let content = article.markdown || article.html || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["imooc.com", "img.mukewang.com"],
+          {skipPatterns: ["imooc.com", "img.mukewang.com"],
             onProgress: options?.onImageProgress,
+            platformName: "慕课网",
           },
         );
 

@@ -7,6 +7,9 @@
  * 草稿接口若仍可用则走 publishNewsInfo status=4，否则给出明确失败原因。
  */
 import { getCookieValue } from "./_cookie.js";
+import {
+  processAndAssertImages,
+} from "./_images.js";
 
 const DOMAINS = [".focus.cn", "focus.cn", "house.focus.cn", "login.focus.cn", "www.focus.cn"];
 const COOKIE_URLS = [
@@ -189,12 +192,13 @@ export function createSohufocusAdapter(BaseAdapter) {
           );
         }
 
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["focus.cn", "51f.com", "sohu.com"],
+          {skipPatterns: ["focus.cn", "51f.com", "sohu.com"],
             onProgress: options?.onImageProgress,
+            platformName: "搜狐焦点",
           },
         );
 

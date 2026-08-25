@@ -19,7 +19,7 @@
     },
     "condition": {
       "urlFilter": "om.qq.com/article/",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   },
   {
@@ -66,6 +66,29 @@
     "condition": {
       "urlFilter": "om.qq.com/userAuth/",
       "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://om.qq.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://om.qq.com/article/articlePublish"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "om.qq.com/image/",
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   }
 ]

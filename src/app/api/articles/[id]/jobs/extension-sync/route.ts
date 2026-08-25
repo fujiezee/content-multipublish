@@ -1,7 +1,19 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { createJobs, listJobsByArticle, updateJob } from "@/lib/db";
-import { jobStatusFromExtensionResult } from "@/lib/job-status";
+import { requireApiUser } from "@/lib/auth/api";
+import {
+  createJobs,
+  getArticleInWorkspace,
+  listJobsByArticle,
+  updateJob,
+} from "@/lib/db";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
+import {
+  isExtensionTimeoutError,
+  isJobOkStatus,
+  jobStatusFromExtensionResult,
+  extensionResultTip,
+} from "@/lib/job-status";
 import {
   ALL_PLATFORM_IDS,
   type JobStatus,
@@ -40,7 +52,12 @@ function normalizeTitle(value: unknown): string {
     .replace(/\s+/g, " ");
 }
 
-function sameResult(a: PublishJob, status: JobStatus, url: string | null, error: string | null) {
+function sameResult(
+  a: PublishJob,
+  status: JobStatus,
+  url: string | null,
+  error: string | null,
+) {
   if (a.status !== status) return false;
   if ((a.result_url || null) !== (url || null)) return false;
   if (status === "failed") {
@@ -54,7 +71,12 @@ function sameResult(a: PublishJob, status: JobStatus, url: string | null, error:
  * Body: { title?: string, entries?: IncomingEntry[] }
  */
 export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id: articleId } = await ctx.params;
+  if (!getArticleInWorkspace(articleId, auth.ctx.workspaceId)) {
+    return NextResponse.json({ error: "文章不存在" }, { status: 404 });
+  }
   const body = await req.json().catch(() => ({}));
   const articleTitle = normalizeTitle(body.title);
   const entries = Array.isArray(body.entries)
@@ -62,7 +84,10 @@ export async function POST(req: Request, ctx: Ctx) {
     : [];
 
   if (!entries.length) {
-    return NextResponse.json({ jobs: listJobsByArticle(articleId), imported: 0 });
+    return NextResponse.json({
+      jobs: listJobsByArticle(articleId),
+      imported: 0,
+    });
   }
 
   const matched = entries.filter((entry) => {
@@ -77,7 +102,6 @@ export async function POST(req: Request, ctx: Ctx) {
   });
 
   const existing = listJobsByArticle(articleId);
-  const createdOrUpdated: PublishJob[] = [];
   let imported = 0;
 
   for (const entry of matched) {
@@ -93,16 +117,7 @@ export async function POST(req: Request, ctx: Ctx) {
       const platform = platformRaw as PlatformId;
       const status = jobStatusFromExtensionResult(result);
       const resultUrl = (result.postUrl || result.url || null) as string | null;
-      const error =
-        status === "failed"
-          ? String(result.error || "扩展同步失败")
-          : status === "filled_awaiting_publish"
-            ? String(
-                result.message ||
-                  result.error ||
-                  "已填入，请在平台窗口确认后点发布",
-              )
-            : null;
+      const error = extensionResultTip(result, status);
 
       const dup = existing.find(
         (j) =>
@@ -112,24 +127,30 @@ export async function POST(req: Request, ctx: Ctx) {
       );
       if (dup) continue;
 
-      const running = existing.find(
-        (j) =>
-          j.platform === platform &&
-          j.engine === "extension" &&
-          (j.status === "running" || j.status === "pending"),
+      const latest = existing.find(
+        (j) => j.platform === platform && j.engine === "extension",
       );
-      if (running) {
-        const updated = updateJob(running.id, {
+      const inflight =
+        latest &&
+        (latest.status === "running" ||
+          latest.status === "pending" ||
+          (latest.status === "failed" &&
+            (isJobOkStatus(status) ||
+              isExtensionTimeoutError(latest.error))));
+      if (inflight && latest) {
+        const updated = updateJob(latest.id, {
           status,
           result_url: resultUrl,
           error,
           engine: "extension",
         });
         if (updated) {
-          createdOrUpdated.push(updated);
-          Object.assign(running, updated);
+          Object.assign(latest, updated);
           imported += 1;
         }
+        continue;
+      }
+      if (latest && isJobOkStatus(latest.status)) {
         continue;
       }
 
@@ -147,9 +168,12 @@ export async function POST(req: Request, ctx: Ctx) {
       };
       createJobs([job]);
       existing.unshift(job);
-      createdOrUpdated.push(job);
       imported += 1;
     }
+  }
+
+  if (imported > 0) {
+    await persistCloudflareDb();
   }
 
   return NextResponse.json({

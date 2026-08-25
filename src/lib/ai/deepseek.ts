@@ -6,7 +6,26 @@ export type DeepSeekConfig = {
 
 export type StreamChunk =
   | { type: "thinking"; text: string }
-  | { type: "content"; text: string };
+  | { type: "content"; text: string }
+  | { type: "finish"; reason: string };
+
+export type DeepSeekThinkType = "enabled" | "disabled";
+export type DeepSeekReasoningEffort = "low" | "high" | "max";
+
+/** V4 默认 thinking=enabled、effort=high。短任务必须显式关掉或降到 low。 */
+export function deepSeekThinkFields(input?: {
+  thinking?: DeepSeekThinkType;
+  reasoningEffort?: DeepSeekReasoningEffort;
+}): Record<string, unknown> {
+  if (!input?.thinking) return {};
+  const extra: Record<string, unknown> = {
+    thinking: { type: input.thinking },
+  };
+  if (input.thinking === "enabled" && input.reasoningEffort) {
+    extra.reasoning_effort = input.reasoningEffort;
+  }
+  return extra;
+}
 
 export function resolveDeepSeekConfig(): DeepSeekConfig | null {
   const apiKey =
@@ -27,7 +46,7 @@ export function resolveDeepSeekConfig(): DeepSeekConfig | null {
   const model =
     process.env.DEEPSEEK_MODEL?.trim() ||
     process.env.OPENAI_MODEL?.trim() ||
-    "deepseek-chat";
+    "deepseek-v4-flash";
 
   return { apiKey, baseUrl, model };
 }
@@ -38,13 +57,25 @@ export function resolveDeepSeekStreamModel(config: DeepSeekConfig): string {
     process.env.DEEPSEEK_REASONING_MODEL?.trim() ||
     process.env.DEEPSEEK_STREAM_MODEL?.trim();
   if (explicit) return explicit;
-  if (config.model === "deepseek-chat") return "deepseek-reasoner";
+  if (
+    config.model === "deepseek-chat" ||
+    config.model === "deepseek-v4-flash"
+  ) {
+    return "deepseek-v4-pro";
+  }
   return config.model;
 }
 
 export async function chatCompletion(
   messages: { role: "system" | "user" | "assistant"; content: string }[],
-  options?: { temperature?: number; maxTokens?: number; timeoutMs?: number },
+  options?: {
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs?: number;
+    thinking?: DeepSeekThinkType;
+    reasoningEffort?: DeepSeekReasoningEffort;
+  },
 ): Promise<string> {
   const config = resolveDeepSeekConfig();
   if (!config) {
@@ -65,10 +96,14 @@ export async function chatCompletion(
         authorization: `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify({
-        model: config.model,
+        model: options?.model ?? config.model,
         messages,
         temperature: options?.temperature ?? 0.7,
         max_tokens: options?.maxTokens ?? 4096,
+        ...deepSeekThinkFields({
+          thinking: options?.thinking ?? "disabled",
+          reasoningEffort: options?.reasoningEffort,
+        }),
       }),
       signal: controller.signal,
     });
@@ -108,6 +143,8 @@ export async function* streamChatCompletion(
     maxTokens?: number;
     timeoutMs?: number;
     signal?: AbortSignal;
+    thinking?: DeepSeekThinkType;
+    reasoningEffort?: DeepSeekReasoningEffort;
   },
 ): AsyncGenerator<StreamChunk> {
   const config = resolveDeepSeekConfig();
@@ -118,8 +155,12 @@ export async function* streamChatCompletion(
   }
 
   const controller = new AbortController();
-  const timeoutMs = options?.timeoutMs ?? 120_000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutMs = options?.timeoutMs ?? 180_000;
+  let timer = setTimeout(() => controller.abort(), timeoutMs);
+  const armIdleTimer = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
   const signal = options?.signal;
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort);
@@ -138,6 +179,7 @@ export async function* streamChatCompletion(
         stream: true,
         temperature: options?.temperature ?? 0.7,
         max_tokens: options?.maxTokens ?? 4096,
+        ...deepSeekThinkFields(options),
       }),
       signal: controller.signal,
     });
@@ -158,6 +200,7 @@ export async function* streamChatCompletion(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      armIdleTimer();
       buffer += decoder.decode(value, { stream: true });
 
       while (true) {
@@ -173,6 +216,7 @@ export async function* streamChatCompletion(
         let json: {
           choices?: {
             delta?: { content?: string; reasoning_content?: string };
+            finish_reason?: string | null;
           }[];
           error?: { message?: string };
         };
@@ -186,13 +230,16 @@ export async function* streamChatCompletion(
           throw new Error(json.error.message);
         }
 
-        const delta = json.choices?.[0]?.delta;
-        if (!delta) continue;
-        if (delta.reasoning_content) {
+        const choice = json.choices?.[0];
+        const delta = choice?.delta;
+        if (delta?.reasoning_content) {
           yield { type: "thinking", text: delta.reasoning_content };
         }
-        if (delta.content) {
+        if (delta?.content) {
           yield { type: "content", text: delta.content };
+        }
+        if (choice?.finish_reason) {
+          yield { type: "finish", reason: choice.finish_reason };
         }
       }
     }

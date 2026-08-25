@@ -5,6 +5,9 @@
  * 新版：account/list + draft/v2 JSON + 设备头。
  */
 import { getCookieValue } from "./_cookie.js";
+import {
+  processAndAssertImages,
+} from "./_images.js";
 
 function generateDeviceId() {
   const chars = "0123456789abcdef";
@@ -164,12 +167,13 @@ export function createSohuAdapter(BaseAdapter) {
           });
         }
 
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["sohu.com"],
+          {skipPatterns: ["sohu.com"],
             onProgress: options?.onImageProgress,
+            platformName: "搜狐号",
           },
         );
 

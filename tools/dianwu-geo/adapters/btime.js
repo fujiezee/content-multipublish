@@ -1,3 +1,7 @@
+import {
+  processAndAssertImages,
+  createHostOnlyUpload,
+} from "./_images.js";
 /**
  * 北京时间号（时间号）— mp.btime.com
  * 探测草稿 JSON；失败则打开后台 DOM 填入并点「存草稿」。
@@ -146,7 +150,7 @@ export function createBtimeAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      return { url: src };
+      return createHostOnlyUpload(["btime.com","brtn.cn"], "北京时间号")(src);
     }
 
     async saveViaApi(title, content) {
@@ -335,12 +339,14 @@ export function createBtimeAdapter(BaseAdapter) {
 
         const title = String(article.title || "").trim().slice(0, 64);
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
           {
             skipPatterns: ["btime.com", "brtn.cn"],
             onProgress: options?.onImageProgress,
+            platformName: "北京时间号",
           },
         );
 

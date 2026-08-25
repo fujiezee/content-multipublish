@@ -96,6 +96,7 @@ function parseKeywordRows(raw: string): GeoKeywordDraft[] {
     const item = row as Record<string, unknown>;
     const keyword =
       (typeof item.keyword === "string" && item.keyword) ||
+      (typeof item.pain === "string" && item.pain) ||
       (typeof item.term === "string" && item.term) ||
       (typeof item.query === "string" && item.query) ||
       "";
@@ -133,32 +134,36 @@ export async function mineGeoKeywords(
   input: MineGeoKeywordsInput,
 ): Promise<GeoKeywordDraft[]> {
   const seed = input.seed.trim();
-  if (!seed) throw new Error("请填写主词");
+  if (!seed) throw new Error("请填写产品或主题");
 
   const count = Math.min(Math.max(input.count ?? 40, 10), 80);
   const existing = new Set(input.existingNormKeys ?? []);
-  const context = input.context?.trim() || "无额外背景";
+  const context = input.context?.trim() || "未说明，请自行推断最可能的目标用户";
 
-  const system = `你是 GEO（生成式引擎优化）与 SEO 关键词策略专家。
-任务：围绕用户主词，挖掘适合写文章的长尾关键词，并给出对应文章标题。
+  const system = `你是 GEO（生成式引擎优化）内容策略专家，专挖目标用户的真实痛点。
+任务：围绕产品/主题，先锁定目标用户，再列出他们会说出口、会去搜、会拿去问 AI 的痛点；每条痛点配一篇能回答它的文章标题。
 要求：
-1. 长尾词要有搜索意图差异，覆盖：科普认知、教程方法、对比评测、选购方案、场景人群、问答解惑等角度
-2. 可包含「如何」「为什么」「哪个好」「多少钱」「适合谁」等自然问法
-3. keyword 与 title 均不得重复或高度近似（换几个字不算新词）
-4. title 适合作为文章标题，15–35 字，吸引人且包含核心词
-5. 只输出 JSON 数组，不要 markdown 说明`;
+1. keyword 是痛点原话或自然问法，不是堆砌产品名的 SEO 长尾
+2. 痛点要具体：浪费时间、选错、算不清账、落地不了、不信任、怕踩坑、协同不上、效果难证明、场景对不上…
+3. 覆盖不同类型：搞不懂 / 做不成 / 选不准 / 不敢买 / 用不上 / 不放心，不要十条都是「如何做 X」
+4. 少写空泛认知词（「XX 是什么」「XX 怎么用」除非痛点就是认知缺口）
+5. keyword 与 title 均不得重复或高度近似（换几个字不算新）
+6. title 16–40 字，把判断说完整，直接回应该痛点
+7. angle 写清「谁 + 什么场景」
+8. 只输出 JSON 数组，不要 markdown 说明`;
 
-  const user = `主词：${seed}
-背景：${context}
-请生成 ${count} 条不重复的长尾词，严格 JSON 数组格式：
+  const user = `产品/主题：${seed}
+目标用户与场景：${context}
+请生成 ${count} 条不重复的目标用户痛点，严格 JSON 数组格式：
 [
   {
-    "keyword": "长尾搜索词",
-    "title": "对应文章标题",
+    "keyword": "用户会说/会搜的痛点原话",
+    "title": "针对这个痛点给答案的文章标题",
     "intent": "informational|howto|comparison|commercial|local|question",
-    "angle": "一句话说明写作角度"
+    "angle": "谁（岗位/角色）在什么场景下会有这个痛点"
   }
-]`;
+]
+intent 含义：informational=搞不懂，howto=做不成，comparison=选不准，commercial=不敢买，local=用不上，question=不放心`;
 
   const raw = await chatCompletion(
     [
@@ -170,7 +175,7 @@ export async function mineGeoKeywords(
 
   const parsed = parseKeywordRows(raw);
   if (!parsed.length) {
-    throw new Error("AI 未返回有效关键词，请重试或换一个主词");
+    throw new Error("AI 未返回有效痛点，请重试或补充目标用户");
   }
 
   return dedupeGeoKeywordDrafts(parsed, existing);

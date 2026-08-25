@@ -24,7 +24,7 @@
     },
     "condition": {
       "urlFilter": "zhuanlan.zhihu.com/api/",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   },
   {
@@ -52,7 +52,7 @@
     },
     "condition": {
       "urlFilter": "www.zhihu.com/api/",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   },
   {
@@ -70,7 +70,34 @@
     },
     "condition": {
       "urlFilter": "api.zhihu.com/",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 2,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://zhuanlan.zhihu.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://zhuanlan.zhihu.com/write"
+        },
+        {
+          "header": "Cookie",
+          "operation": "remove"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "zhihu-pics-upload.zhimg.com",
+      "resourceTypes": ["xmlhttprequest", "other"]
     }
   }
 ]

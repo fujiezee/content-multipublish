@@ -1,11 +1,10 @@
 /**
- * Injects CLI / MCP bridge settings into the popup「设置」drawer
- * (under Claude Code / MCP), and enlarges that drawer + popup chrome.
+ * Injects 点物网站 bind settings into the popup「设置」drawer.
+ * Local CLI / MCP serve is retired — hide Wechatsync MCP UI and keep MCP off.
  */
 (function popupSyncBridgeSettings() {
   const PANEL_ID = "dwgeo-sync-bridge-settings";
   const STYLE_ID = "dwgeo-sync-bridge-layout";
-  const DEFAULT_URL = "ws://127.0.0.1:9527";
 
   function ensureLayoutStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -54,6 +53,11 @@
         font-weight: 600;
         color: #101828;
         margin: 0 0 4px;
+      }
+      #${PANEL_ID} .dwgeo-bridge-split {
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid #e5e7eb;
       }
       #${PANEL_ID} .dwgeo-bridge-hint {
         font-size: 12px;
@@ -137,53 +141,14 @@
     return node;
   }
 
-  function loadSettings() {
-    return new Promise((resolve) => {
-      chrome.storage.local.get(
-        ["mcpServerUrl", "mcpToken", "mcpEnabled"],
-        (data) => {
-          resolve({
-            url: data?.mcpServerUrl || DEFAULT_URL,
-            token: data?.mcpToken || "",
-            enabled: !!data?.mcpEnabled,
-          });
-        },
-      );
-    });
-  }
-
-  function saveSettings(url, token) {
-    return new Promise((resolve) => {
-      chrome.storage.local.set(
-        {
-          mcpServerUrl: (url || DEFAULT_URL).trim(),
-          mcpToken: (token || "").trim(),
-        },
-        () => resolve(),
-      );
-    });
-  }
-
-  function fetchStatus() {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "MCP_STATUS" }, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({
-            enabled: false,
-            connected: false,
-            error: chrome.runtime.lastError.message,
-          });
-          return;
-        }
-        resolve(resp || { enabled: false, connected: false });
-      });
-    });
-  }
-
-  function statusText(st) {
-    if (st.connected) return "桥接：已连接";
-    if (st.enabled) return "桥接：已开启，等待连接…（请先运行 dianwu-geo serve）";
-    return "桥接：未开启（请先打开上方「MCP 连接」开关）";
+  async function buildPanel() {
+    return el("div", { id: PANEL_ID, "data-dwgeo-bridge": "1" }, [
+      el("p", { className: "dwgeo-bridge-title", text: "点物网站" }),
+      el("p", {
+        className: "dwgeo-bridge-hint",
+        text: "已对接 https://dianwu.ai。装好扩展后，打开网站点同步/发布即可。",
+      }),
+    ]);
   }
 
   function hideFeedbackLinks() {
@@ -249,71 +214,60 @@
 
   async function buildPanel() {
     const settings = await loadSettings();
-    const status = await fetchStatus();
 
-    const urlInput = el("input", {
+    const saasUrlInput = el("input", {
       type: "text",
-      placeholder: DEFAULT_URL,
+      placeholder: "https://dianwu.ai 或 http://127.0.0.1:3000",
     });
-    urlInput.value = settings.url;
+    saasUrlInput.value = settings.saasBaseUrl;
 
-    const tokenInput = el("input", {
+    const saasTokenInput = el("input", {
       type: "password",
-      placeholder: "与 DIANWU_GEO_TOKEN 一致（可空）",
+      placeholder: "设置页生成的扩展 Token（可空）",
     });
-    tokenInput.value = settings.token;
+    saasTokenInput.value = settings.saasToken;
 
-    const statusLine = el("div", {
+    const saasStatus = el("div", {
       className: "dwgeo-bridge-status",
-      text: statusText(status),
+      text: handshakeText(settings.handshake),
     });
-    const msg = el("div", { className: "dwgeo-bridge-msg" });
+    const saasMsg = el("div", { className: "dwgeo-bridge-msg" });
 
-    const saveBtn = el(
+    const saveSaasBtn = el(
       "button",
       {
         type: "button",
         className: "primary",
         onclick: async () => {
-          await saveSettings(urlInput.value, tokenInput.value);
-          msg.textContent = "已保存。请关闭再开启「MCP 连接」使地址生效。";
-          statusLine.textContent = statusText(await fetchStatus());
+          await saveSaas(saasUrlInput.value, saasTokenInput.value);
+          saasMsg.textContent = "已保存。";
+          chrome.runtime.sendMessage({ type: "SAAS_HANDSHAKE" }, (resp) => {
+            saasStatus.textContent = handshakeText(
+              resp || { ok: false, error: chrome.runtime.lastError?.message },
+            );
+          });
         },
       },
-      ["保存桥接设置"],
-    );
-
-    const refreshBtn = el(
-      "button",
-      {
-        type: "button",
-        className: "ghost",
-        onclick: async () => {
-          statusLine.textContent = statusText(await fetchStatus());
-          msg.textContent = "";
-        },
-      },
-      ["刷新状态"],
+      ["保存网站绑定"],
     );
 
     return el("div", { id: PANEL_ID, "data-dwgeo-bridge": "1" }, [
-      el("p", { className: "dwgeo-bridge-title", text: "CLI / MCP 同步桥接" }),
+      el("p", { className: "dwgeo-bridge-title", text: "点物网站" }),
       el("p", {
         className: "dwgeo-bridge-hint",
-        text: "服务器默认 ws://127.0.0.1:9527，本机执行 dianwu-geo serve 或 npm run geo:serve。",
+        text: "装好扩展，在点物网页点同步/发布即可。网页会直接叫扩展，没有本机脚本。",
       }),
-      el("label", { text: "服务器地址" }),
-      urlInput,
-      el("label", { text: "Token" }),
-      tokenInput,
-      statusLine,
-      msg,
-      el("div", { className: "dwgeo-bridge-actions" }, [saveBtn, refreshBtn]),
+      el("label", { text: "网站地址（可选）" }),
+      saasUrlInput,
+      el("label", { text: "扩展 Token（可选，设置页生成）" }),
+      saasTokenInput,
+      saasStatus,
+      saasMsg,
+      el("div", { className: "dwgeo-bridge-actions" }, [saveSaasBtn]),
     ]);
   }
 
-  /** Hide stock “运行 yarn mcp …” hint — replaced by our bridge panel. */
-  function hideStockMcpHints(root) {
+  function hideRetiredLocalScriptUi(root) {
     if (!root) return;
     for (const p of root.querySelectorAll("p")) {
       const t = (p.textContent || "").replace(/\s+/g, "");
@@ -322,6 +276,15 @@
         (t.includes("运行") && t.includes("启动服务"))
       ) {
         p.style.display = "none";
+      }
+    }
+    const claude = findClaudeSection(root);
+    if (claude) claude.style.display = "none";
+    for (const node of root.querySelectorAll("h3, p, span, label, div")) {
+      const t = (node.textContent || "").replace(/\s+/g, "").trim();
+      if (t === "MCP连接" || t.startsWith("MCP连接")) {
+        const wrap = node.closest(".space-y-3") || node.parentElement;
+        if (wrap && wrap !== root) wrap.style.display = "none";
       }
     }
   }
@@ -337,7 +300,7 @@
       return;
     }
 
-    hideStockMcpHints(scrollHost);
+    hideRetiredLocalScriptUi(scrollHost);
 
     if (document.getElementById(PANEL_ID) || mounting) return;
     mounting = true;
@@ -349,11 +312,12 @@
 
       const claude = findClaudeSection(scrollHost);
       if (claude && claude.parentElement) {
+        claude.style.display = "none";
         claude.insertAdjacentElement("afterend", panel);
       } else {
         scrollHost.appendChild(panel);
       }
-      hideStockMcpHints(scrollHost);
+      hideRetiredLocalScriptUi(scrollHost);
     } finally {
       mounting = false;
     }

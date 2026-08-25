@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 大风号（原凤凰号）— mp.ifeng.com
  * 优先试常见草稿 JSON；失败则打开创作页 DOM 填入并点「存草稿」。
@@ -168,43 +171,44 @@ export function createDafengAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      try {
-        const imageResponse = await this.runtime.fetch(src);
-        if (!imageResponse.ok) return { url: src };
-        const blob = await imageResponse.blob();
-        const formData = new FormData();
-        formData.append("file", blob, `${Date.now()}.jpg`);
-        formData.append("upload", blob, `${Date.now()}.jpg`);
-
-        const uploadUrls = [
-          "https://mp.ifeng.com/api/upload/image",
-          "https://mp.ifeng.com/api/v1/upload/image",
-          "https://mp.ifeng.com/cmpp/upload/image",
-        ];
-        for (const url of uploadUrls) {
-          try {
-            const response = await this.runtime.fetch(url, {
-              method: "POST",
-              credentials: "include",
-              headers: { Referer: "https://mp.ifeng.com/manage/originalArticle" },
-              body: formData,
-            });
-            const text = await response.text();
-            const res = this.parseJsonSafe(text);
-            const out =
-              res?.data?.url ||
-              res?.url ||
-              res?.data?.src ||
-              res?.result?.url;
-            if (out) return { url: out };
-          } catch {
-            // next
-          }
-        }
-      } catch {
-        // keep original
+      const imageResponse = await this.runtime.fetch(src);
+      if (!imageResponse.ok) {
+        throw new Error(`图片下载失败(${imageResponse.status}): ${src}`);
       }
-      return { url: src };
+      const blob = await imageResponse.blob();
+      const formData = new FormData();
+      formData.append("file", blob, `${Date.now()}.jpg`);
+      formData.append("upload", blob, `${Date.now()}.jpg`);
+
+      const uploadUrls = [
+        "https://mp.ifeng.com/api/upload/image",
+        "https://mp.ifeng.com/api/v1/upload/image",
+        "https://mp.ifeng.com/cmpp/upload/image",
+      ];
+      let lastError = "未返回平台图床地址";
+      for (const url of uploadUrls) {
+        try {
+          const response = await this.runtime.fetch(url, {
+            method: "POST",
+            credentials: "include",
+            headers: { Referer: "https://mp.ifeng.com/manage/originalArticle" },
+            body: formData,
+          });
+          const text = await response.text();
+          const res = this.parseJsonSafe(text);
+          const out =
+            res?.data?.url ||
+            res?.url ||
+            res?.data?.src ||
+            res?.result?.url;
+          if (out) return { url: out };
+          lastError =
+            (res?.msg || res?.message || text || "").slice(0, 120) || lastError;
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      throw new Error(`大风号图片上传失败: ${lastError}`);
     }
 
     async saveViaApi(title, content) {
@@ -391,12 +395,13 @@ export function createDafengAdapter(BaseAdapter) {
 
         const title = String(article.title || "").trim().slice(0, 64);
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["ifeng.com", "ifengimg.com"],
+          {skipPatterns: ["ifeng.com", "ifengimg.com"],
             onProgress: options?.onImageProgress,
+            platformName: "大风号",
           },
         );
 

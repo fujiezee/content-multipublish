@@ -46,6 +46,37 @@
         flex: 1 1 0 !important;
         min-height: 0 !important;
       }
+      /*
+       * Stock popup uses Tailwind animate-pulse (opacity 1→0.5) on the
+       * platform currently syncing — Chinese labels look muddy/blurry.
+       * Keep a ring pulse instead; never dim the text.
+       */
+      @keyframes dwgeo-sync-ring {
+        0%,
+        100% {
+          box-shadow: inset 0 0 0 2px rgb(37 99 235 / 0.35);
+        }
+        50% {
+          box-shadow: inset 0 0 0 2px rgb(37 99 235 / 0.95);
+        }
+      }
+      #root main button.animate-pulse {
+        animation: dwgeo-sync-ring 1.2s ease-in-out infinite !important;
+        opacity: 1 !important;
+      }
+      #root main button.animate-pulse span {
+        opacity: 1 !important;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: geometricPrecision;
+      }
+      /* Sync footer: higher-contrast blue (avoid washed blue-on-blue-50) */
+      #root footer .bg-blue-50 span.text-blue-700,
+      #root footer .bg-blue-50 span.text-blue-600,
+      #root footer .bg-blue-50 span.text-blue-500 {
+        color: #1e40af !important;
+        font-weight: 600;
+        opacity: 1 !important;
+      }
     </style>
   </body>
 </html>

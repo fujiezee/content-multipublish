@@ -16,6 +16,10 @@ import { TextStyle, Color } from "@tiptap/extension-text-style";
 import Highlight from "@tiptap/extension-highlight";
 import { TableKit } from "@tiptap/extension-table";
 import { cleanPastedHtml } from "@/lib/content/paste";
+import {
+  containsMarkdownTable,
+  markdownToHtml,
+} from "@/lib/content/markdown";
 
 type Props = {
   value: string;
@@ -26,6 +30,8 @@ type Props = {
 export type RichTextEditorHandle = {
   insertImage: (src: string, alt?: string) => void;
   focus: () => void;
+  getHTML: () => string;
+  flushChange: () => string;
 };
 
 function ToolbarButton({
@@ -66,6 +72,32 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, Props>(
   ) {
     const lastEmitted = useRef(value);
     const editorRef = useRef<Editor | null>(null);
+    const onChangeRef = useRef(onChange);
+    const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    onChangeRef.current = onChange;
+
+    const emitChange = (html: string, immediate = false) => {
+      lastEmitted.current = html;
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+        debounceTimer.current = null;
+      }
+      if (immediate) {
+        onChangeRef.current(html);
+        return;
+      }
+      // Large AI drafts re-render the whole article page; batch parent updates.
+      debounceTimer.current = setTimeout(() => {
+        debounceTimer.current = null;
+        onChangeRef.current(html);
+      }, 160);
+    };
+
+    useEffect(() => {
+      return () => {
+        if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      };
+    }, []);
 
     const editor = useEditor({
       immediatelyRender: false,
@@ -96,6 +128,30 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, Props>(
                     ? { "data-infographic": attributes["data-infographic"] }
                     : {},
               },
+              "data-article-cover": {
+                default: null,
+                parseHTML: (element) =>
+                  element.getAttribute("data-article-cover"),
+                renderHTML: (attributes) =>
+                  attributes["data-article-cover"]
+                    ? { "data-article-cover": attributes["data-article-cover"] }
+                    : {},
+              },
+              "data-corpus-asset": {
+                default: null,
+                parseHTML: (element) =>
+                  element.getAttribute("data-corpus-asset"),
+                renderHTML: (attributes) =>
+                  attributes["data-corpus-asset"]
+                    ? { "data-corpus-asset": attributes["data-corpus-asset"] }
+                    : {},
+              },
+              style: {
+                default: null,
+                parseHTML: (element) => element.getAttribute("style"),
+                renderHTML: (attributes) =>
+                  attributes.style ? { style: attributes.style } : {},
+              },
             };
           },
         }).configure({
@@ -119,23 +175,33 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, Props>(
           const clipboard = event.clipboardData;
           if (!clipboard) return false;
 
-          const html = clipboard.getData("text/html");
-          if (!html?.trim()) return false;
-
           const ed = editorRef.current;
           if (!ed) return false;
 
-          event.preventDefault();
-          ed.commands.insertContent(cleanPastedHtml(html), {
-            parseOptions: { preserveWhitespace: "full" },
-          });
-          return true;
+          const html = clipboard.getData("text/html");
+          const text = clipboard.getData("text/plain");
+
+          if (html?.trim()) {
+            event.preventDefault();
+            ed.commands.insertContent(cleanPastedHtml(html), {
+              parseOptions: { preserveWhitespace: "full" },
+            });
+            return true;
+          }
+
+          if (text?.trim() && containsMarkdownTable(text)) {
+            event.preventDefault();
+            ed.commands.insertContent(markdownToHtml(text), {
+              parseOptions: { preserveWhitespace: "full" },
+            });
+            return true;
+          }
+
+          return false;
         },
       },
       onUpdate: ({ editor: ed }) => {
-        const html = ed.getHTML();
-        lastEmitted.current = html;
-        onChange(html);
+        emitChange(ed.getHTML(), false);
       },
     });
 
@@ -163,6 +229,14 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, Props>(
         },
         focus() {
           editorRef.current?.chain().focus().run();
+        },
+        getHTML() {
+          return editorRef.current?.getHTML() ?? lastEmitted.current ?? "";
+        },
+        flushChange() {
+          const html = editorRef.current?.getHTML() ?? lastEmitted.current ?? "";
+          emitChange(html, true);
+          return html;
         },
       }),
       [],

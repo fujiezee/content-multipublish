@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import type { CharacterCatalogItem, VideoCharacterPhoto } from "@/lib/types";
 import { VoicePreviewButton } from "@/components/VoicePreviewButton";
@@ -9,42 +9,82 @@ import {
   DEFAULT_CHARACTER_VOICE,
   resolveVoiceId,
 } from "@/lib/ai/tts-voice-ids";
+import {
+  IMAGE_GEN_MODELS,
+  readStoredImageModel,
+  writeStoredImageModel,
+  type ImageGenModelOption,
+} from "@/lib/ai/image-gen-models-shared";
+import { ModelPicker } from "@/components/ModelPicker";
+import { useInfiniteList } from "@/components/useInfiniteList";
+import { rewritePublicMediaUrl } from "@/lib/content/media-urls";
 
 type VoiceOption = { id: string; label: string; hint?: string; group?: string };
 
 export function CharacterCatalog() {
-  const [items, setItems] = useState<CharacterCatalogItem[] | null>(null);
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [name, setName] = useState("");
   const [createVoiceId, setCreateVoiceId] = useState(DEFAULT_CHARACTER_VOICE);
+  const [imageModels, setImageModels] = useState<ImageGenModelOption[]>(
+    IMAGE_GEN_MODELS,
+  );
+  const [imageModelId, setImageModelId] = useState(readStoredImageModel);
   const [photos, setPhotos] = useState<VideoCharacterPhoto[]>([]);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [generatingId, setGeneratingId] = useState("");
+  const [lookRev, setLookRev] = useState<Record<string, number>>({});
+  const [metaReady, setMetaReady] = useState(false);
+
+  function mediaSrc(url: string, stamp?: string | number) {
+    const src = rewritePublicMediaUrl(url);
+    if (!src || stamp == null || stamp === "") return src;
+    const join = src.includes("?") ? "&" : "?";
+    return `${src}${join}v=${encodeURIComponent(String(stamp))}`;
+  }
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const res = await fetch("/api/characters", { cache: "no-store" });
-      const data = (await res.json()) as {
-        items?: CharacterCatalogItem[];
-        voices?: VoiceOption[];
-      };
-      if (cancelled || !res.ok) return;
-      setItems(data.items ?? []);
+  const fetchPage = useCallback(async (offset: number, limit: number) => {
+    const res = await fetch(
+      `/api/characters?limit=${limit}&offset=${offset}`,
+      { cache: "no-store" },
+    );
+    const data = (await res.json()) as {
+      items?: CharacterCatalogItem[];
+      voices?: VoiceOption[];
+      imageModels?: ImageGenModelOption[];
+      nextOffset?: number | null;
+      hasMore?: boolean;
+      error?: string;
+    };
+    if (!res.ok) throw new Error(data.error || "加载失败");
+    if (offset === 0) {
+      if (data.imageModels?.length) setImageModels(data.imageModels);
+      setImageModelId(readStoredImageModel());
       if (data.voices?.length) {
         setVoices(data.voices);
         setCreateVoiceId((cur) => resolveVoiceId(cur) || data.voices![0].id);
       }
-    })();
-    return () => {
-      cancelled = true;
+      setMetaReady(true);
+    }
+    return {
+      items: data.items ?? [],
+      nextOffset: data.nextOffset ?? null,
+      hasMore: Boolean(data.hasMore),
     };
   }, []);
+
+  const {
+    items,
+    setItems,
+    booting,
+    reload,
+    sentinel,
+  } = useInfiniteList<CharacterCatalogItem>(fetchPage);
 
   function voiceLabel(id?: string): string {
     if (!id) return "还没绑音色";
@@ -63,12 +103,11 @@ export function CharacterCatalog() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name }),
       });
-      const data = (await res.json()) as {
-        error?: string;
-        items?: CharacterCatalogItem[];
-      };
+      const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error || "改名失败");
-      if (data.items) setItems(data.items);
+      setItems((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, name } : item)),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "改名失败");
     }
@@ -82,12 +121,11 @@ export function CharacterCatalog() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ voice_id }),
       });
-      const data = (await res.json()) as {
-        error?: string;
-        items?: CharacterCatalogItem[];
-      };
+      const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error || "保存音色失败");
-      if (data.items) setItems(data.items);
+      setItems((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, voice_id } : item)),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存音色失败");
     }
@@ -119,7 +157,7 @@ export function CharacterCatalog() {
     }
     setBusy(true);
     setError(null);
-      setStatus("正在把照片转成半写实插画设定（正面、侧前、侧面、背面）…大约一两分钟");
+    setStatus("正在按照片出角色设定（正面、侧前、侧面、背面）…大约一两分钟");
     try {
       const res = await fetch("/api/characters", {
         method: "POST",
@@ -129,15 +167,15 @@ export function CharacterCatalog() {
           photos,
           voice_id: createVoiceId,
           generate: true,
+          imageModel: imageModelId,
         }),
       });
       const data = (await res.json()) as {
         error?: string;
-        items?: CharacterCatalogItem[];
         id?: string;
       };
       if (!res.ok) throw new Error(data.error || "生成失败");
-      setItems(data.items ?? []);
+      await reload();
       setOpenId(data.id || null);
       setPhotos([]);
       setName("");
@@ -149,8 +187,33 @@ export function CharacterCatalog() {
     }
   }
 
-  const ready = (items || []).filter((item) => item.angles.length > 0);
-  const drafts = (items || []).filter((item) => item.angles.length === 0);
+  async function regenerateLook(id: string, name: string) {
+    setBusy(true);
+    setGeneratingId(id);
+    setError(null);
+    setStatus(`正在重出「${name || "这个人"}」的正面、侧前、侧面、背面…`);
+    try {
+      const res = await fetch(`/api/characters/${id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ imageModel: imageModelId }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || "重出失败");
+      await reload();
+      setLookRev((cur) => ({ ...cur, [id]: Date.now() }));
+      setOpenId(id);
+      setStatus(`「${name || "这个人"}」的角色图已重出。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重出失败");
+    } finally {
+      setBusy(false);
+      setGeneratingId("");
+    }
+  }
+
+  const ready = items.filter((item) => item.angles.length > 0);
+  const drafts = items.filter((item) => item.angles.length === 0);
 
   return (
     <div className="space-y-6">
@@ -158,10 +221,17 @@ export function CharacterCatalog() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">角色</h1>
           <p className="mt-1 text-[var(--muted)]">
-            一个人只建一次，比如傅介子，可以绑很多剧本。音色跟角色走，选他就用他的声音。
+            一个人只建一次，比如傅介子，可以绑很多剧本。音色跟角色走，
+            <Link href="/voices" className="underline">
+              自己的音色
+            </Link>
+            也在这里选。
           </p>
         </div>
         <div className="flex gap-2">
+          <Link href="/voices" className="btn btn-ghost">
+            音色
+          </Link>
           <Link href="/scripts" className="btn btn-ghost">
             剧本
           </Link>
@@ -192,12 +262,34 @@ export function CharacterCatalog() {
             onChange={setCreateVoiceId}
           />
           <VoicePreviewButton voiceId={createVoiceId} disabled={busy} />
+          <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+            <span>出图</span>
+            <ModelPicker
+              className="min-w-[12rem]"
+              buttonClassName="field model-picker__btn w-52"
+              title="选择出图模型"
+              value={imageModelId}
+              items={(imageModels.length ? imageModels : IMAGE_GEN_MODELS).map((m) => ({
+                id: m.id,
+                label: m.label,
+                hint: m.hint,
+                cost: m.cost,
+                ready: m.ready !== false,
+                badges: m.badges,
+              }))}
+              disabled={busy}
+              onChange={(next) => {
+                setImageModelId(next);
+                writeStoredImageModel(next);
+              }}
+            />
+          </label>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {photos.map((photo) => (
             <div key={photo.url} className="relative">
               <img
-                src={photo.url}
+                src={rewritePublicMediaUrl(photo.url)}
                 alt="参考"
                 className="h-20 w-20 rounded-md object-cover ring-1 ring-[var(--line)]"
               />
@@ -233,8 +325,7 @@ export function CharacterCatalog() {
           </button>
         </div>
         <p className="text-xs text-[var(--muted)]">
-          照片只用来认人。设定图会转成半写实插画：五官清楚像个人，但不是照片。分镜和
-          2.0 出片都吃这套图。
+          照片只用来认人。设定图做成戏里的人，不要卡通，也不要证件照。分镜和出片都吃这套图。
         </p>
         {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
         {status && !error && (
@@ -242,11 +333,11 @@ export function CharacterCatalog() {
         )}
       </div>
 
-      {items === null ? (
+      {booting && !metaReady ? (
         <p className="text-sm text-[var(--muted)]">正在载入角色库…</p>
       ) : items.length === 0 ? (
         <p className="text-sm text-[var(--muted)]">
-          还没有角色。上面传一张照片转成半写实插画设定，或到文章里按剧本生成。
+          还没有角色。上面传一张照片出设定，或到文章里按剧本生成。
         </p>
       ) : (
         <div className="space-y-4">
@@ -256,6 +347,7 @@ export function CharacterCatalog() {
                 const open = openId === item.id;
                 const cover =
                   item.angles.find((a) => a.id === "front") || item.angles[0];
+                const stamp = lookRev[item.id] || item.updated_at;
                 return (
                   <li
                     key={item.id}
@@ -266,7 +358,7 @@ export function CharacterCatalog() {
                       onClick={() => setOpenId(open ? null : item.id)}
                     >
                       <img
-                        src={cover.url}
+                        src={mediaSrc(cover.url, stamp)}
                         alt={item.name || "角色"}
                         className="h-24 w-16 rounded-md object-cover ring-1 ring-[var(--line)]"
                       />
@@ -362,11 +454,25 @@ export function CharacterCatalog() {
                           }
                         />
                       </label>
+                      <div className="flex flex-wrap items-center justify-end">
+                        <button
+                          type="button"
+                          className="btn btn-ghost text-xs"
+                          disabled={busy}
+                          title="按设定重出正面、侧前、侧面、背面"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void regenerateLook(item.id, item.name);
+                          }}
+                        >
+                          {generatingId === item.id ? "重出中…" : "重出角色图"}
+                        </button>
+                      </div>
                       <div className="grid grid-cols-4 gap-2">
                         {item.angles.map((angle) => (
-                          <figure key={angle.id} className="space-y-1">
+                          <figure key={`${angle.id}-${stamp}`} className="space-y-1">
                             <img
-                              src={angle.url}
+                              src={mediaSrc(angle.url, stamp)}
                               alt={angle.label}
                               className="aspect-[3/4] w-full rounded-md object-cover ring-1 ring-[var(--line)]"
                             />
@@ -388,6 +494,7 @@ export function CharacterCatalog() {
               还有 {drafts.length} 个只传了照片、还没出多角度的，到角色库上面或任意剧本里出多角度。
             </p>
           )}
+          {sentinel}
         </div>
       )}
     </div>

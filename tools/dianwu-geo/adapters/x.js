@@ -129,33 +129,21 @@ export function createXAdapter(BaseAdapter) {
 
     async checkAuth() {
       try {
-        const { ct0 } = await this.getTokens();
-        const response = await this.runtime.fetch(
-          "https://api.x.com/1.1/account/verify_credentials.json",
-          {
-            credentials: "include",
-            headers: this.apiHeaders(ct0),
-          },
-        );
-        if (!response.ok) {
-          return { isAuthenticated: false, error: "未登录或会话已过期" };
-        }
-        const data = await response.json();
-        if (!data?.id_str && !data?.id) {
-          return { isAuthenticated: false, error: "未登录" };
-        }
+        // 只看 Cookie。verify_credentials 走 api.x.com，国内常挂起直到核心 8s
+        // 「auth timeout」，弹窗/全量探测会被拖死并打出误导日志。
+        const { authToken, ct0 } = await this.getTokens();
         this.account = {
-          userId: String(data.id_str || data.id),
-          username: data.screen_name || data.name || String(data.id_str),
-          avatar: data.profile_image_url_https || data.profile_image_url,
+          userId: String(authToken).slice(0, 12),
+          username: "X 用户",
         };
+        void ct0;
         return {
           isAuthenticated: true,
           userId: this.account.userId,
           username: this.account.username,
-          avatar: this.account.avatar,
         };
       } catch (error) {
+        this.account = null;
         return {
           isAuthenticated: false,
           error: error instanceof Error ? error.message : String(error),

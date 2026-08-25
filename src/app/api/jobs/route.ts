@@ -1,8 +1,19 @@
 import { NextResponse } from "next/server";
-import { listJobs } from "@/lib/db";
+import { requireApiUser } from "@/lib/auth/api";
+import { listJobsInWorkspace } from "@/lib/db";
+import { parseListPage, slicePage } from "@/lib/list-page";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  return NextResponse.json({ jobs: listJobs(200) });
+export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
+  const { limit, offset } = parseListPage(new URL(req.url));
+  const rows = listJobsInWorkspace(auth.ctx.workspaceId, limit + 1, offset);
+  const page = slicePage(rows, limit, offset);
+  return NextResponse.json({
+    jobs: page.items,
+    nextOffset: page.nextOffset,
+    hasMore: page.hasMore,
+  });
 }

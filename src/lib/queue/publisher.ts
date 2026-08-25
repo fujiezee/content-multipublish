@@ -1,8 +1,13 @@
+import { shouldDeferPlaywrightToAgent } from "@/lib/agent";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
+import { isExtensionRequiredPlatform } from "@/lib/dianwu-geo";
 import {
+  clearJobClaim,
   createJobs,
   getArticle,
   getJob,
   listPendingJobs,
+  tryClaimPendingJob,
   updateJob,
   upsertSession,
 } from "@/lib/db";
@@ -24,9 +29,19 @@ import { normalizePublishEngine } from "@/lib/types";
 import type { BrowserContext, Page } from "playwright";
 import { randomUUID } from "crypto";
 
+function extensionRequiredPublishError(platform: PlatformId): string {
+  if (platform === "weixin") {
+    return "微信公众号请用 Chrome 扩展同步，本机不再自动开窗";
+  }
+  if (platform === "douyin") {
+    return "抖音文章请用 Chrome 扩展同步，本机不再自动开窗";
+  }
+  return "该平台请用 Chrome 扩展同步，本机不再自动开窗";
+}
+
 let processing = false;
 
-export function enqueuePublish(
+export async function enqueuePublish(
   articleId: string,
   platforms: PlatformId[],
   options: { engine?: PublishEngine } = {},
@@ -37,21 +52,38 @@ export function enqueuePublish(
 
   const engine = normalizePublishEngine(options.engine);
   const now = new Date().toISOString();
-  const jobs: PublishJob[] = platforms.map((platform) => ({
-    id: randomUUID(),
-    article_id: articleId,
-    platform,
-    // Extension jobs start running — browser bridge updates them; never enter the Node queue
-    status: engine === "extension" ? "running" : "pending",
-    result_url: null,
-    error: null,
-    screenshot_path: null,
-    engine,
-    created_at: now,
-    updated_at: now,
-  }));
+  const jobs: PublishJob[] = platforms.map((platform) => {
+    const refuseLocal =
+      engine === "playwright" && isExtensionRequiredPlatform(platform);
+    return {
+      id: randomUUID(),
+      article_id: articleId,
+      platform,
+      // Extension jobs start running — browser bridge updates them; never enter the Node queue
+      status: refuseLocal
+        ? "failed"
+        : engine === "extension"
+          ? "running"
+          : "pending",
+      result_url: null,
+      error: refuseLocal ? extensionRequiredPublishError(platform) : null,
+      screenshot_path: null,
+      engine,
+      created_at: now,
+      updated_at: now,
+    };
+  });
   createJobs(jobs);
-  if (engine === "playwright" || engine === "api") {
+  const workspaceId = article.workspace_id || "ws_local";
+  if (engine === "api") {
+    // Cloudflare Worker 会在请求结束后冻结 isolate；API 推送必须在响应前跑完并落库。
+    await processQueue();
+    return jobs.map((job) => getJob(job.id) ?? job);
+  }
+  if (
+    engine === "playwright" &&
+    !shouldDeferPlaywrightToAgent(workspaceId)
+  ) {
     void processQueue();
   }
   return jobs;
@@ -60,9 +92,20 @@ export function enqueuePublish(
 export async function retryJob(jobId: string) {
   const job = getJob(jobId);
   if (!job) throw new Error("任务不存在");
-  // Keep api retries on the API path; extension failures fall back to Playwright
-  const engine: PublishEngine =
-    job.engine === "api" ? "api" : "playwright";
+  if (job.engine === "extension") {
+    throw new Error("扩展同步请在文章页刷新登录后重试");
+  }
+  const engine: PublishEngine = job.engine === "api" ? "api" : "playwright";
+  if (engine === "playwright" && isExtensionRequiredPlatform(job.platform)) {
+    updateJob(jobId, {
+      status: "failed",
+      error: extensionRequiredPublishError(job.platform),
+      result_url: null,
+      screenshot_path: null,
+      engine,
+    });
+    return getJob(jobId);
+  }
   updateJob(jobId, {
     status: "pending",
     error: null,
@@ -70,7 +113,14 @@ export async function retryJob(jobId: string) {
     screenshot_path: null,
     engine,
   });
-  void processQueue();
+  clearJobClaim(jobId);
+  const article = getArticle(job.article_id);
+  const workspaceId = article?.workspace_id || "ws_local";
+  if (engine === "api") {
+    await processQueue();
+  } else if (!shouldDeferPlaywrightToAgent(workspaceId)) {
+    void processQueue();
+  }
   return getJob(jobId);
 }
 
@@ -79,14 +129,23 @@ export async function retryJob(jobId: string) {
  * If a job keeps the window open for manual finish, wait until that
  * context is closed (or timed out) before starting the next job.
  */
+function canRunJobInThisProcess(job: PublishJob): boolean {
+  if (normalizePublishEngine(job.engine) === "api") return true;
+  if (normalizePublishEngine(job.engine) !== "playwright") return false;
+  const article = getArticle(job.article_id);
+  const workspaceId = article?.workspace_id || "ws_local";
+  return !shouldDeferPlaywrightToAgent(workspaceId);
+}
+
 export async function processQueue() {
   if (processing) return;
   processing = true;
   try {
     while (true) {
-      const pending = listPendingJobs();
+      const pending = listPendingJobs().filter(canRunJobInThisProcess);
       if (!pending.length) break;
       await runJob(pending[0]);
+      await persistCloudflareDb();
       // Brief pause so the previous window fully tears down
       await new Promise((r) => setTimeout(r, 800));
     }
@@ -192,10 +251,12 @@ async function runApiJob(job: PublishJob): Promise<void> {
     return;
   }
 
-  const result = await adapter.publishDraft(contentToDraftArticle(content));
+  const result = await adapter.publishDraft(
+    contentToDraftArticle(content, { sourceId: article.id }),
+  );
   if (result.success) {
     updateJob(job.id, {
-      status: "draft_ok",
+      status: result.live ? "published" : "draft_ok",
       result_url: result.postUrl ?? null,
       error: null,
     });
@@ -205,33 +266,42 @@ async function runApiJob(job: PublishJob): Promise<void> {
       error: result.error ?? "草稿同步失败",
     });
   }
+  await persistCloudflareDb();
 }
 
-async function runJob(job: PublishJob): Promise<void> {
-  if (normalizePublishEngine(job.engine) === "api") {
-    await runApiJob(job);
-    return;
-  }
+export type PlaywrightJobOutcome = {
+  status: PublishJob["status"];
+  result_url: string | null;
+  error: string | null;
+  screenshot_path: string | null;
+};
 
-  updateJob(job.id, { status: "running", error: null });
-  const article = getArticle(job.article_id);
-  if (!article) {
-    updateJob(job.id, { status: "failed", error: "文章不存在" });
-    return;
+/** Run one Playwright publish. Does not write the job row (caller persists). */
+export async function executePlaywrightPublish(
+  platform: PublishJob["platform"],
+  content: NonNullable<ReturnType<typeof publishContentForPlatform>>,
+  options?: {
+    onOutcome?: (outcome: PlaywrightJobOutcome) => void | Promise<void>;
+  },
+): Promise<PlaywrightJobOutcome> {
+  if (isExtensionRequiredPlatform(platform)) {
+    const outcome: PlaywrightJobOutcome = {
+      status: "failed",
+      result_url: null,
+      error: extensionRequiredPublishError(platform),
+      screenshot_path: null,
+    };
+    await options?.onOutcome?.(outcome);
+    return outcome;
   }
-
-  const publisher = getPublisher(job.platform);
-  const content = publishContentForPlatform(article.id, job.platform);
-  if (!content) {
-    updateJob(job.id, { status: "failed", error: "文章不存在" });
-    return;
-  }
+  const publisher = getPublisher(platform);
   let context: BrowserContext | undefined;
   let page: Page | undefined;
   let keepOpen = false;
+  let waitTimeoutMs = 5 * 60 * 1000;
 
   try {
-    const opened = await openContext(job.platform, {
+    const opened = await openContext(platform, {
       headless: false,
       useSession: true,
     });
@@ -273,6 +343,8 @@ async function runJob(job: PublishJob): Promise<void> {
       "https://house.focus.cn",
       "https://creator.xiaohongshu.com",
       "https://www.xiaohongshu.com",
+      "https://cp.11467.com",
+      "https://www.11467.com",
       "https://creator.douyin.com",
       "https://www.douyin.com",
       "https://mp.163.com",
@@ -319,39 +391,79 @@ async function runJob(job: PublishJob): Promise<void> {
     keepOpen = Boolean(result.keepOpen);
 
     const status = jobStatusFromPublishResult(result);
+    if (status === "filled_awaiting_publish") {
+      waitTimeoutMs = 2 * 60 * 60 * 1000;
+    }
+    const outcome: PlaywrightJobOutcome =
+      status !== "failed"
+        ? {
+            status,
+            result_url: result.url ?? page.url(),
+            error:
+              status === "filled_awaiting_publish"
+                ? result.error ?? "已填入，请在打开的窗口确认后点发布"
+                : null,
+            screenshot_path: result.screenshotPath ?? null,
+          }
+        : {
+            status: "failed",
+            result_url: null,
+            error: result.error ?? "发布失败",
+            screenshot_path: result.screenshotPath ?? null,
+          };
     if (status !== "failed") {
-      await saveSession(job.platform, context).catch(() => undefined);
-      updateJob(job.id, {
-        status,
-        result_url: result.url ?? page.url(),
-        error:
-          status === "filled_awaiting_publish"
-            ? result.error ?? "已填入，请在打开的窗口确认后点发布"
-            : null,
-        screenshot_path: result.screenshotPath ?? null,
-      });
-      // Fill-confirm platforms keep the window; true draft/publish success closes.
+      await saveSession(platform, context).catch(() => undefined);
       if (status !== "filled_awaiting_publish") {
         keepOpen = false;
       }
-    } else {
-      updateJob(job.id, {
-        status: "failed",
-        error: result.error ?? "发布失败",
-        screenshot_path: result.screenshotPath ?? null,
-      });
     }
+    if (options?.onOutcome) await options.onOutcome(outcome);
+    return outcome;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    updateJob(job.id, { status: "failed", error: message });
     keepOpen = true;
+    const outcome: PlaywrightJobOutcome = {
+      status: "failed",
+      result_url: null,
+      error: message,
+      screenshot_path: null,
+    };
+    if (options?.onOutcome) await options.onOutcome(outcome);
+    return outcome;
   } finally {
     if (context) {
       if (keepOpen && page && !page.isClosed()) {
-        // Block the queue until this platform window is done / closed
-        await waitForManualFinish(context, page, { platform: job.platform });
+        await waitForManualFinish(context, page, {
+          platform,
+          timeoutMs: waitTimeoutMs,
+        });
       }
       await context.close().catch(() => undefined);
     }
   }
+}
+
+async function runJob(job: PublishJob): Promise<void> {
+  if (normalizePublishEngine(job.engine) === "api") {
+    await runApiJob(job);
+    return;
+  }
+
+  const claimed = tryClaimPendingJob(job.id, "inline");
+  if (!claimed) return;
+
+  const article = getArticle(claimed.article_id);
+  if (!article) {
+    updateJob(claimed.id, { status: "failed", error: "文章不存在" });
+    return;
+  }
+  const content = publishContentForPlatform(article.id, claimed.platform);
+  if (!content) {
+    updateJob(claimed.id, { status: "failed", error: "文章不存在" });
+    return;
+  }
+  const outcome = await executePlaywrightPublish(claimed.platform, content, {
+    onOutcome: (next) => updateJob(claimed.id, next),
+  });
+  updateJob(claimed.id, outcome);
 }

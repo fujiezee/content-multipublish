@@ -44,5 +44,28 @@
       "urlFilter": "imgservice.csdn.net",
       "resourceTypes": ["xmlhttprequest", "other"]
     }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://editor.csdn.net"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://editor.csdn.net/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "csdn-img-blog.obs.cn-north-4.myhuaweicloud.com",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
   }
 ]

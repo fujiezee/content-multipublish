@@ -2,10 +2,12 @@ import {
   dubExistingEpisodeVideo,
   generateArkEpisodeVideo,
   listArkVideoModels,
+  listArkVideoModelsWithOpen,
   listArkVideoPresets,
   resolveArkVideoConfig,
   type VideoGenProgress,
 } from "@/lib/ai/ark-video";
+import { hasCloudflareAiReady } from "@/lib/ai/model-catalog/cloudflare-seed";
 import type { VideoShot, VideoSpeakMode } from "@/lib/types";
 
 export type { VideoGenProgress };
@@ -26,20 +28,35 @@ export type EpisodeVideoInput = {
   speakMode?: VideoSpeakMode;
   voiceId?: string;
   cast?: Array<{ id: string; name: string; voice_id?: string }>;
+  stanceNotes?: string;
   force?: boolean;
   onlyIndexes?: number[];
   composeOnly?: boolean;
+  /** native=模型自己出声；lipsync=用成片声音对口型；tts=另配音再对口型 */
+  voicePath?: "native" | "tts" | "lipsync";
+  innerVoice?: "off" | "low" | "mid" | "high";
+  lookStyle?: string | null;
+  hookStyle?: string | null;
+  director?: import("@/lib/ai/director-lock").ShotAgentLock | null;
+  bedMusic?: boolean;
+  bedSongUrl?: string;
 };
 
 export type EpisodeVideoResult = {
   url: string | null;
+  sourceUrl?: string | null;
+  subtitleUrl?: string | null;
+  captionCues?: {
+    captions: { start: number; end: number; line: string }[];
+    flowers: { start: number; end: number; line: string }[];
+  };
   model: string;
   shots?: VideoShot[];
   composed?: boolean;
 };
 
 export function videoGenConfigured(): boolean {
-  return resolveArkVideoConfig() !== null;
+  return resolveArkVideoConfig() !== null || hasCloudflareAiReady();
 }
 
 export function videoGenPresets() {
@@ -48,6 +65,10 @@ export function videoGenPresets() {
 
 export function videoGenModels() {
   return listArkVideoModels();
+}
+
+export async function videoGenModelsWithOpen() {
+  return listArkVideoModelsWithOpen();
 }
 
 export async function dubEpisodeVideo(
@@ -67,7 +88,7 @@ export async function generateEpisodeVideo(
 ): Promise<EpisodeVideoResult> {
   if (!videoGenConfigured()) {
     throw new Error(
-      "还没配方舟。在提及检测页填入火山方舟 API Key，或在 .env.local 设置 ARK_API_KEY",
+      "还没配方舟。在查排名页填入火山方舟 API Key，或在 .env.local 设置 ARK_API_KEY",
     );
   }
   return generateArkEpisodeVideo(input, onProgress);

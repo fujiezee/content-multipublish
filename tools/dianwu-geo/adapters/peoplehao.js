@@ -1,3 +1,7 @@
+import {
+  processAndAssertImages,
+  createHostOnlyUpload,
+} from "./_images.js";
 /**
  * 人民号 — pdcreator.pdnews.cn
  * 探测草稿 JSON；失败则打开后台 DOM 填入并点「存草稿」。
@@ -136,7 +140,7 @@ export function createPeoplehaoAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      return { url: src };
+      return createHostOnlyUpload(["pdnews.cn","people.com.cn","people.cn"], "人民号")(src);
     }
 
     async saveViaApi(title, content) {
@@ -322,12 +326,14 @@ export function createPeoplehaoAdapter(BaseAdapter) {
 
         const title = String(article.title || "").trim().slice(0, 64);
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
           {
             skipPatterns: ["pdnews.cn", "people.com.cn", "people.cn"],
             onProgress: options?.onImageProgress,
+            platformName: "人民号",
           },
         );
 

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiUser } from "@/lib/auth/api";
 import {
   checkPlatformSession,
   connectPlatform,
@@ -18,6 +19,8 @@ function parsePlatform(raw: string): PlatformId | null {
 }
 
 export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { platform: raw } = await ctx.params;
   const platform = parsePlatform(raw);
   if (!platform) {

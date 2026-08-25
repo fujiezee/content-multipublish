@@ -3,8 +3,20 @@
  *
  * 现网首页仍注入 globalConfig，但已无旧结束标记 `var G = {`；
  * 且游客页也会带 utoken，必须以 isLogin / wmid 判断登录。
+ *
+ * 封面/正文图必须落在 globalConfig.imageDomains 白名单内，否则 save-draft
+ * 返回「封面图地址非法」。常见误伤：alicdn / ns.dayu.com / Vigma org_url。
  */
 import { getCookieValue } from "./_cookie.js";
+import { processAndAssertImages } from "./_images.js";
+
+/** 与 mp.dayu.com globalConfig.imageDomains 对齐（子串匹配） */
+const IMAGE_HOST_PATTERNS = [
+  "image.uc.cn",
+  "pfdev.uodoo.com",
+  "image.zzd.sm.cn",
+  "mp.dayu.com",
+];
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -19,7 +31,16 @@ export function createDayuAdapter(BaseAdapter) {
       capabilities: ["article", "draft", "image_upload", "cover"],
     };
 
-    /** @type {{ utoken: string; uploadSign: string; uid: string; title: string; avatar?: string } | null} */
+    /** @type {{
+     *   utoken: string;
+     *   uploadSign: string;
+     *   outsiteUploadSign: string;
+     *   feHost: string;
+     *   appid: string;
+     *   uid: string;
+     *   title: string;
+     *   avatar?: string;
+     * } | null} */
     account = null;
 
     /** @type {Array<{ org_url: string; url: string }>} */
@@ -81,6 +102,20 @@ export function createDayuAdapter(BaseAdapter) {
       return `https://${avatar.replace(/^\/+/, "")}`;
     }
 
+    normalizeUrl(src) {
+      const s = String(src || "").trim();
+      if (!s) return "";
+      if (s.startsWith("//")) return `https:${s}`;
+      return s;
+    }
+
+    /** 仅接受大鱼 imageDomains 白名单 */
+    isAllowedImageUrl(src) {
+      const s = this.normalizeUrl(src);
+      if (!s || s.startsWith("data:")) return false;
+      return IMAGE_HOST_PATTERNS.some((h) => s.includes(h));
+    }
+
     accountFromConfig(pageConfig) {
       const wmid = pageConfig?.wmid != null ? String(pageConfig.wmid).trim() : "";
       const isLogin = pageConfig?.isLogin === true || pageConfig?.isLogin === 1;
@@ -90,6 +125,12 @@ export function createDayuAdapter(BaseAdapter) {
       return {
         utoken: String(pageConfig.utoken),
         uploadSign: pageConfig.nsImageUploadSign || "",
+        outsiteUploadSign: pageConfig.nsOutsiteImgUploadSign || "",
+        feHost: String(pageConfig.nodeServiceFeHost || "https://ns.dayu.com").replace(
+          /\/$/,
+          "",
+        ),
+        appid: String(pageConfig.nsAppid || "website"),
         uid: wmid || String(pageConfig.ucid || pageConfig.aid || "dayu"),
         title:
           pageConfig.weMediaName ||
@@ -156,6 +197,12 @@ export function createDayuAdapter(BaseAdapter) {
         this.account = {
           utoken: String(lastConfig.utoken),
           uploadSign: lastConfig.nsImageUploadSign || "",
+          outsiteUploadSign: lastConfig.nsOutsiteImgUploadSign || "",
+          feHost: String(lastConfig.nodeServiceFeHost || "https://ns.dayu.com").replace(
+            /\/$/,
+            "",
+          ),
+          appid: String(lastConfig.nsAppid || "website"),
           uid: String(cookieWmid),
           title: lastConfig.weMediaName || String(cookieWmid),
           avatar: this.normalizeAvatar(lastConfig.wmAvator),
@@ -186,7 +233,68 @@ export function createDayuAdapter(BaseAdapter) {
       }
     }
 
-    async uploadImageByUrl(src) {
+    /**
+     * 从上传响应里挑白名单 URL。优先 url（编辑器正文也用 url），不要误用外链 org_url。
+     * @param {Record<string, unknown> | null | undefined} imgInfo
+     */
+    pickAllowedUrl(imgInfo) {
+      if (!imgInfo || typeof imgInfo !== "object") return "";
+      for (const key of ["url", "org_url"]) {
+        const cand = this.normalizeUrl(imgInfo[key]);
+        if (this.isAllowedImageUrl(cand)) return cand;
+      }
+      return "";
+    }
+
+    rememberImage(orgUrl, hostedUrl) {
+      const image = {
+        org_url: this.normalizeUrl(orgUrl) || hostedUrl,
+        url: hostedUrl,
+      };
+      this.images.push(image);
+      return { url: hostedUrl };
+    }
+
+    /** 站外 URL 转存（与编辑器 uploadOutsiteImages 同源，返回 image.uc.cn） */
+    async uploadViaOutsite(src) {
+      const account = await this.ensureAccount();
+      if (!account.outsiteUploadSign) {
+        throw new Error("缺少 nsOutsiteImgUploadSign");
+      }
+      const uploadUrl =
+        `${account.feHost}/article/outsiteImgUpload` +
+        `?appid=${encodeURIComponent(account.appid)}` +
+        `&wmid=${encodeURIComponent(account.uid)}` +
+        `&wmname=${encodeURIComponent(account.title)}` +
+        `&sign=${account.outsiteUploadSign}`;
+
+      const response = await this.runtime.fetch(uploadUrl, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          Accept: "application/json, text/javascript, */*; q=0.01",
+        },
+        body: new URLSearchParams({ imgSrc: src }).toString(),
+      });
+      const res = await response.json();
+      if (res?.code != null && Number(res.code) !== 0) {
+        throw new Error(res?.message || res?.msg || `outsiteImgUpload code=${res.code}`);
+      }
+      const imgInfo = res?.data?.imgInfo || res?.imgInfo || res?.data;
+      const hosted = this.pickAllowedUrl(imgInfo);
+      if (!hosted) {
+        throw new Error(
+          `outsiteImgUpload 未返回白名单地址: ${String(
+            imgInfo?.url || imgInfo?.org_url || "",
+          ).slice(0, 96)}`,
+        );
+      }
+      return this.rememberImage(src, hosted);
+    }
+
+    /** 二进制上传（Wechatsync 路径）；仍须校验白名单 */
+    async uploadViaBinary(src) {
       const account = await this.ensureAccount();
       const imageResponse = await this.runtime.fetch(src);
       if (!imageResponse.ok) throw new Error(`图片下载失败: ${src}`);
@@ -195,8 +303,9 @@ export function createDayuAdapter(BaseAdapter) {
       const filename = `${Date.now()}.jpg`;
 
       const uploadUrl =
-        `https://ns.dayu.com/article/imageUpload?appid=website&fromMaterial=0` +
-        `&wmid=${account.uid}` +
+        `${account.feHost}/article/imageUpload?appid=${encodeURIComponent(account.appid)}` +
+        `&fromMaterial=0` +
+        `&wmid=${encodeURIComponent(account.uid)}` +
         `&wmname=${encodeURIComponent(account.title)}` +
         `&sign=${account.uploadSign}`;
 
@@ -219,15 +328,38 @@ export function createDayuAdapter(BaseAdapter) {
       });
       const res = await response.json();
       const imgInfo = res?.data?.imgInfo || res?.imgInfo;
-      if (!imgInfo?.url && !imgInfo?.org_url) {
-        throw new Error(res?.error || res?.msg || "大鱼号图片上传失败");
+      const hosted = this.pickAllowedUrl(imgInfo);
+      if (!hosted) {
+        throw new Error(
+          res?.error ||
+            res?.msg ||
+            `大鱼号图床返回非白名单地址: ${String(
+              imgInfo?.url || imgInfo?.org_url || "",
+            ).slice(0, 96)}`,
+        );
       }
-      const image = {
-        org_url: imgInfo.org_url || imgInfo.url,
-        url: imgInfo.url || imgInfo.org_url,
-      };
-      this.images.push(image);
-      return { url: image.url };
+      return this.rememberImage(src, hosted);
+    }
+
+    async uploadImageByUrl(src) {
+      const normalized = this.normalizeUrl(src);
+      if (this.isAllowedImageUrl(normalized)) {
+        return this.rememberImage(normalized, normalized);
+      }
+
+      try {
+        return await this.uploadViaOutsite(normalized);
+      } catch (outsiteErr) {
+        try {
+          return await this.uploadViaBinary(normalized);
+        } catch (binaryErr) {
+          const a =
+            outsiteErr instanceof Error ? outsiteErr.message : String(outsiteErr);
+          const b =
+            binaryErr instanceof Error ? binaryErr.message : String(binaryErr);
+          throw new Error(`大鱼号图片转存失败: ${b}（outsite: ${a}）`);
+        }
+      }
     }
 
     async publish(article, options) {
@@ -236,25 +368,28 @@ export function createDayuAdapter(BaseAdapter) {
         const account = await this.ensureAccount();
         const title = String(article.title || "").slice(0, 64);
 
+        // 不传封面（coverImg 易触发「封面图地址非法」）；只转存正文图
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
           {
-            skipPatterns: ["dayu.com", "uc.cn", "alicdn.com"],
+            skipPatterns: IMAGE_HOST_PATTERNS,
             onProgress: options?.onImageProgress,
+            platformName: "大鱼号",
           },
         );
 
-        const coverImg = this.images[0]?.org_url || "";
         const body = new URLSearchParams({
           title,
           content,
           author: account.title,
-          coverImg,
           article_type: "1",
           utoken: account.utoken,
-          cover_from: "auto",
+          // 显式清空，避免服务端沿用/自动抽封面
+          coverImg: "",
+          cover_from: "",
         });
 
         const response = await this.runtime.fetch(
@@ -290,6 +425,7 @@ export function createDayuAdapter(BaseAdapter) {
           postId: String(draftId),
           postUrl: `https://mp.dayu.com/dashboard/article/write?draft_id=${draftId}`,
           draftOnly: options?.draftOnly ?? true,
+          message: "草稿已保存（未设封面，请在大鱼号编辑器里选封面）",
         });
       } catch (error) {
         return this.createResult(false, {

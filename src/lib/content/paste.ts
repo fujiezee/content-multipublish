@@ -1,3 +1,5 @@
+import { hydrateMarkdownTables } from "@/lib/content/markdown";
+
 /**
  * Clean clipboard HTML from Word / 飞书 / 微信 / Google Docs so TipTap
  * keeps bold, italic, links, lists, headings and colors.
@@ -18,7 +20,7 @@ export function cleanPastedHtml(html: string): string {
     .replace(/<\/?m:[^>]*>/gi, "");
 
   if (typeof DOMParser === "undefined") {
-    return normalizeInlineTags(fragment);
+    return hydrateMarkdownTables(normalizeInlineTags(fragment));
   }
 
   const doc = new DOMParser().parseFromString(
@@ -26,7 +28,7 @@ export function cleanPastedHtml(html: string): string {
     "text/html",
   );
   const root = doc.getElementById("__paste_root");
-  if (!root) return normalizeInlineTags(fragment);
+  if (!root) return hydrateMarkdownTables(normalizeInlineTags(fragment));
 
   // Remove scripts/styles/comments left in tree
   root.querySelectorAll("script, style, meta, link, xml").forEach((el) => el.remove());
@@ -154,7 +156,7 @@ export function cleanPastedHtml(html: string): string {
     }
   });
 
-  return root.innerHTML;
+  return hydrateMarkdownTables(root.innerHTML);
 }
 
 function wrapContents(el: Element, tagName: string, doc: Document) {

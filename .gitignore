@@ -42,5 +42,16 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# generated extension zip (packed at deploy)
+/public/dianwu-geo.zip
+
 # local runtime data
 /data/
+
+# Cloudflare / OpenNext
+/.open-next/
+/.wrangler/
+/.cf-bundle/
+/cf-dist/
+/cf/sql-wasm.wasm
+/cloudflare-env.d.ts

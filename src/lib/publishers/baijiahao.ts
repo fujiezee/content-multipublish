@@ -1,4 +1,5 @@
 import type { Frame, Page } from "playwright";
+import { resolveCoverFile } from "@/lib/content/cover-file";
 import {
   captureDebugScreenshot,
   clickFirstVisible,
@@ -758,13 +759,52 @@ async function clickConfirmPublish(page: Page) {
   return false;
 }
 
-async function clickPublishFlow(page: Page) {
+async function uploadLocalCover(
+  page: Page,
+  coverPath: string | null,
+): Promise<boolean> {
+  const file = resolveCoverFile(coverPath);
+  if (!file) return false;
+  if (!(await openCoverModal(page))) return false;
+  const tab = page
+    .locator(
+      ".cheetah-modal .cheetah-tabs-tab, .cheetah-modal [role='tab'], [role='dialog'] [role='tab']",
+    )
+    .filter({ hasText: /本地上传/ })
+    .first();
+  if ((await tab.count()) > 0) {
+    await tab.click({ force: true }).catch(() => undefined);
+    await page.waitForTimeout(500);
+  }
+  const input = page
+    .locator('.cheetah-modal:visible input[type="file"], [role="dialog"]:visible input[type="file"]')
+    .first();
+  if ((await input.count()) === 0) return false;
+  await input.setInputFiles(file).catch(() => undefined);
+  await page.waitForTimeout(1600);
+  const confirm = page
+    .locator(
+      '.cheetah-modal:visible button:has-text("确定"), [role="dialog"]:visible button:has-text("确定")',
+    )
+    .last();
+  for (let i = 0; i < 8; i++) {
+    if (!(await confirm.isDisabled().catch(() => true))) break;
+    await page.waitForTimeout(400);
+  }
+  if (await confirm.isDisabled().catch(() => true)) return false;
+  await confirm.click({ force: true });
+  await page.waitForTimeout(1200);
+  return !(await coverModalOpen(page));
+}
+
+async function clickPublishFlow(page: Page, coverPath: string | null) {
   await dismissOverlays(page);
 
-  // Required: AI 封图生成并选用一张（不能跳过）
-  const covered = await selectAiCover(page);
+  const covered =
+    (await uploadLocalCover(page, coverPath).catch(() => false)) ||
+    (await selectAiCover(page));
   if (!covered) {
-    throw new Error("百家号封面未设置：请完成 AI 封图选择后再发布");
+    throw new Error("百家号封面未设置：请完成封面选择后再发布");
   }
 
   // Exact「发布」— never「定时发布」
@@ -923,7 +963,7 @@ async function publish(
     await page.waitForTimeout(300);
     await assertStillOnEditor(page);
 
-    await clickPublishFlow(page);
+    await clickPublishFlow(page, content.coverPath);
 
     let published = await waitForPublished(page, 25_000);
     if (published) {

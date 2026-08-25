@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 华为云社区博客（bbs.huaweicloud.com）
  *
@@ -135,16 +138,16 @@ export function createHuaweicloudAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      try {
-        const { data } = await this.apiJson("/file/storage", {
-          method: "POST",
-          body: { img_url: src },
-        });
-        if (data?.url) return { url: data.url };
-      } catch {
-        // fall through — keep original URL (may fail whitelist on save)
+      const { data } = await this.apiJson("/file/storage", {
+        method: "POST",
+        body: { img_url: src },
+      });
+      if (!data?.url) {
+        throw new Error(
+          data?.message || data?.msg || "华为云图片转存失败（需白名单图床）",
+        );
       }
-      return { url: src };
+      return { url: data.url };
     }
 
     async saveDraft({ title, content, draftID = "" }) {
@@ -185,11 +188,11 @@ export function createHuaweicloudAdapter(BaseAdapter) {
 
         let md = String(article.markdown || "").trim();
         if (!md) md = this.htmlToMarkdown(article.html || article.content || "");
-        md = await this.processImages(
+        md = await processAndAssertImages(
+          this,
           md,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: [
+          {skipPatterns: [
               "huaweicloud.com",
               "huawei.com",
               "myhuaweicloud.com",
@@ -197,6 +200,7 @@ export function createHuaweicloudAdapter(BaseAdapter) {
               "hc-cdn.com",
             ],
             onProgress: options?.onImageProgress,
+            platformName: "华为云社区",
           },
         );
 

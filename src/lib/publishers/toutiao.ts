@@ -1,12 +1,10 @@
-import fs from "fs";
-import path from "path";
 import type { Page } from "playwright";
+import { resolveCoverFile as resolveSharedCoverFile } from "@/lib/content/cover-file";
 import {
   captureDebugScreenshot,
   clickFirstVisible,
 } from "@/lib/publishers/browser";
 import type { PlatformPublisher } from "@/lib/publishers/types";
-import { DATA_DIR, UPLOADS_DIR } from "@/lib/paths";
 import type { PublishContent, PublishResult } from "@/lib/types";
 
 const EDITOR_URL = "https://mp.toutiao.com/profile_v4/graphic/publish";
@@ -201,21 +199,7 @@ async function fillBody(page: Page, content: PublishContent) {
 }
 
 function resolveCoverFile(coverPath: string | null): string | null {
-  if (!coverPath) return null;
-  const candidates = [
-    coverPath,
-    path.join(process.cwd(), coverPath.replace(/^\//, "")),
-    path.join(DATA_DIR, coverPath.replace(/^\/?data\//, "")),
-    path.join(UPLOADS_DIR, path.basename(coverPath)),
-    path.join(
-      UPLOADS_DIR,
-      coverPath.replace(/^\/?api\/uploads\//, "").replace(/^\//, ""),
-    ),
-  ];
-  for (const p of candidates) {
-    if (p && fs.existsSync(p) && fs.statSync(p).isFile()) return p;
-  }
-  return null;
+  return resolveSharedCoverFile(coverPath);
 }
 
 async function handleCover(page: Page, coverPath: string | null) {

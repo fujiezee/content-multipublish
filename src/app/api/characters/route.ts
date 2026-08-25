@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { requireApiUser } from "@/lib/auth/api";
 import { generateCharacterAngles } from "@/lib/ai/character-sheet";
+import { listImageGenModels } from "@/lib/ai/image-gen-models";
 import { listTtsVoices } from "@/lib/ai/ark-tts";
 import {
   createStudioCharacter,
   listCharacterCatalog,
   updateStudioCharacter,
 } from "@/lib/db";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
+import { parseListPage, slicePage } from "@/lib/list-page";
 import type { VideoCharacterPhoto } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -23,9 +26,19 @@ function normalizePhotos(raw: unknown): VideoCharacterPhoto[] {
 export async function GET(req: Request) {
   const auth = await requireApiUser(req);
   if (!auth.ok) return auth.response;
+  const { limit, offset } = parseListPage(new URL(req.url));
+  const rows = listCharacterCatalog(auth.ctx.workspaceId, {
+    angles: "first",
+    limit: limit + 1,
+    offset,
+  });
+  const page = slicePage(rows, limit, offset);
   return NextResponse.json({
-    items: listCharacterCatalog(auth.ctx.workspaceId),
-    voices: listTtsVoices(),
+    items: page.items,
+    nextOffset: page.nextOffset,
+    hasMore: page.hasMore,
+    voices: listTtsVoices(auth.ctx.workspaceId),
+    imageModels: listImageGenModels(),
   });
 }
 
@@ -50,16 +63,16 @@ export async function POST(req: Request) {
   });
 
   if (!generate) {
-    return NextResponse.json({
-      items: listCharacterCatalog(auth.ctx.workspaceId),
-      id: row.id,
-    });
+    await persistCloudflareDb();
+    return NextResponse.json({ id: row.id });
   }
 
   try {
     const angles = await generateCharacterAngles({
       name: name || "这个人",
       photos,
+      imageModel:
+        typeof body.imageModel === "string" ? body.imageModel : undefined,
     });
     updateStudioCharacter({
       id: row.id,
@@ -68,10 +81,8 @@ export async function POST(req: Request) {
       angles_json: JSON.stringify(angles),
       source: "photo",
     });
-    return NextResponse.json({
-      items: listCharacterCatalog(auth.ctx.workspaceId),
-      id: row.id,
-    });
+    await persistCloudflareDb();
+    return NextResponse.json({ id: row.id });
   } catch (err) {
     const message = err instanceof Error ? err.message : "生成角色失败";
     return NextResponse.json({ error: message }, { status: 500 });

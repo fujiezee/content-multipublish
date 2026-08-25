@@ -1,3 +1,7 @@
+import {
+  processAndAssertImages,
+  createHostOnlyUpload,
+} from "./_images.js";
 /**
  * 360快传号 — kuaichuan.360kuai.com
  *
@@ -378,7 +382,7 @@ export function createKuaichuanAdapter(BaseAdapter) {
     }
 
     async uploadImageByUrl(src) {
-      return { url: src };
+      return createHostOnlyUpload(["360kuai.com","qhimg.com","360.cn"], "360快传号")(src);
     }
 
     async publish(article, options) {
@@ -390,12 +394,14 @@ export function createKuaichuanAdapter(BaseAdapter) {
 
         const title = String(article.title || "").trim().slice(0, 64);
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
           {
             skipPatterns: ["360kuai.com", "qhimg.com", "360.cn"],
             onProgress: options?.onImageProgress,
+            platformName: "360快传号",
           },
         );
 

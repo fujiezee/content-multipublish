@@ -4,7 +4,7 @@
 
 ## 版本（必跟迭代）
 
-Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `version` 字段（当前 **2.6.0**）。
+Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `version` 字段（当前 **2.11.7**）。
 
 改适配器 / 桥接 / 规则后**必须** bump：
 
@@ -48,7 +48,13 @@ Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `v
 | `tencentcloud` | 腾讯云+ | `addArticleDraft` + `<!--markdown-->` 包裹 |
 | `aliyun` | 阿里云开发者 | `putDraft?p_csrf=`（cookie `c_csrf`） |
 | `huaweicloud` | 华为云社区 | `save-draft` + `/api/get-ainfo` 的 `csrf` 头；草稿箱最多 10 篇 |
+| `shunqi` | 顺企网 | `news_add` 填稿确认；挂 1 张新闻图 |
+| `shunqi_product` | 顺企网产品 | `product_add` 填稿确认；需产品图 |
+| `bafang` | 八方资源网 | `m.b2b168.com/?pg=Supply` 填稿确认；需产品图 |
 | `xiaohongshu` | 小红书 | **填稿确认制**：无稳定草稿 API；DOM 填入后待用户点发布 |
+| `douyin` | 抖音文章 | **填稿确认制**：`chrome.debugger` 写入标题/正文，封面和发布人点 |
+| `douyin_video` | 抖音视频 | **视频专用**（不进文章同步）：上传页塞成片，写标题/简介，发布人点 |
+| `weixin` | 微信公众号 | **覆盖内置**：`chrome.debugger` 打开图文编辑器写标题/正文，封面和发表人点 |
 
 每个平台：`adapters/<id>.js` + `rules/<id>.json`（DNR）+ `register-extra-adapters.js` 注册。
 
@@ -66,12 +72,6 @@ Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `v
 2. 打开扩展弹窗 → 点刷新 → 应出现对应格子
 3. 编辑器勾选该平台 →「多平台同步」走扩展·草稿
 
-## CLI / MCP 同步桥接
+## 发稿路径
 
-扩展 SW 会连接本机 WebSocket（默认 `ws://127.0.0.1:9527`），由 [`tools/dianwu-geo-cli`](../dianwu-geo-cli/) 提供服务端。
-
-1. `cd tools/dianwu-geo-cli && npm i && npm run build && npm start`
-2. Popup 开启「MCP 连接」；底部「CLI / MCP 同步桥接」可改服务器地址与 Token
-3. `node dist/cli.js platforms --auth` / `sync article.md -p juejin`
-
-配置项存于 `chrome.storage.local`：`mcpServerUrl`、`mcpToken`（由 `sync-bridge-config.js` 在连接时改写 WebSocket URL）。
+点物网站经 `chrome.runtime.sendMessage` 直接叫扩展。本机 CLI / MCP（`ws://127.0.0.1:9527`）已停用，扩展设置里也不再展示。

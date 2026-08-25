@@ -30,3 +30,26 @@ export async function getCookieValue(runtime, domains, name, urls = []) {
   }
   return null;
 }
+
+/**
+ * Scan cookies on domains for the first name that matches.
+ * @param {string[]} domains
+ * @param {RegExp|string} nameMatch
+ */
+export async function findCookieValue(domains, nameMatch) {
+  if (typeof chrome === "undefined" || !chrome.cookies?.getAll) return null;
+  const test =
+    typeof nameMatch === "string"
+      ? (name) => name === nameMatch
+      : (name) => nameMatch.test(name);
+  for (const domain of domains) {
+    try {
+      const list = await chrome.cookies.getAll({ domain });
+      const hit = (list || []).find((c) => c?.value && test(String(c.name || "")));
+      if (hit?.value) return hit.value;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}

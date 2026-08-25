@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 简书 — 基于 Wechatsync v1 jianshu driver（author/notes + 七牛图床）
  */
@@ -203,16 +206,17 @@ export function createJianshuAdapter(BaseAdapter) {
         }
 
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: [
+          {skipPatterns: [
               "jianshu.com",
               "jianshu.io",
               "upload-images.jianshu.io",
             ],
             onProgress: options?.onImageProgress,
+            platformName: "简书",
           },
         );
 

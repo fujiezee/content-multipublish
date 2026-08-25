@@ -9,6 +9,16 @@
           "header": "X-Requested-With",
           "operation": "set",
           "value": "XMLHttpRequest"
+        },
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.woshipm.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://www.woshipm.com/writing"
         }
       ]
     },
@@ -27,11 +37,49 @@
           "header": "X-Requested-With",
           "operation": "set",
           "value": "XMLHttpRequest"
+        },
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.woshipm.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://www.woshipm.com/writing"
         }
       ]
     },
     "condition": {
       "urlFilter": "woshipm.com/api2/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "X-Requested-With",
+          "operation": "set",
+          "value": "XMLHttpRequest"
+        },
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://www.woshipm.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://www.woshipm.com/writing"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "woshipm.com/tensorflow/upyun/upload",
       "resourceTypes": ["xmlhttprequest"]
     }
   }

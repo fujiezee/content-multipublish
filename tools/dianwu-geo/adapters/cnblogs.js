@@ -2,6 +2,9 @@
  * 博客园 — Wechatsync v2 cnblogs.ts 移植
  */
 import { getCookieValue } from "./_cookie.js";
+import {
+  processAndAssertImages,
+} from "./_images.js";
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -160,16 +163,17 @@ export function createCnblogsAdapter(BaseAdapter) {
           throw new Error("正文不能为空（未收到 markdown/html）");
         }
 
-        markdown = await this.processImages(
+        markdown = await processAndAssertImages(
+          this,
           markdown,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: [
+          {skipPatterns: [
               "cnblogs.com",
               "img2024.cnblogs.com",
               "img2023.cnblogs.com",
             ],
             onProgress: options?.onImageProgress,
+            platformName: "博客园",
           },
         );
 

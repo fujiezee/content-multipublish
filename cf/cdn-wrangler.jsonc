@@ -1,0 +1,12 @@
+{
+  "name": "dianwu-cdn",
+  "main": "cdn-worker.js",
+  "compatibility_date": "2026-08-18",
+  "workers_dev": false,
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "vigma-files"
+    }
+  ]
+}

@@ -1,14 +1,21 @@
 import { NextResponse } from "next/server";
+import { rewriteDouyinArticleTitle } from "@/lib/ai/douyin-title";
 import { familyLabel, platformFamily } from "@/lib/content/platform-families";
 import {
   absolutizeHtmlMedia,
   absolutizeMarkdownMedia,
   resolvePublicOrigin,
 } from "@/lib/content/media-urls";
-import { getVariant, getArticle, listVariants } from "@/lib/db";
+import { requireApiUser } from "@/lib/auth/api";
+import { getVariant, getArticleInWorkspace, listVariants, updateArticle } from "@/lib/db";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
+import { htmlToMarkdown } from "@/lib/content/adapt";
+import { ensureCoverInBodyHtml, upsertCoverInBody } from "@/lib/content/cover-html";
 import { publishContentForPlatform } from "@/lib/content/publish-resolve";
 import {
   assertPublicMediaOrThrow,
+  hasNonPublicMedia,
+  publishLocalCoverPath,
   publishLocalMediaInHtml,
   publishLocalMediaInMarkdown,
 } from "@/lib/storage/public-media";
@@ -21,8 +28,10 @@ type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(req: Request, ctx: Ctx) {
   try {
+    const auth = await requireApiUser(req);
+    if (!auth.ok) return auth.response;
     const { id } = await ctx.params;
-    const article = getArticle(id);
+    const article = getArticleInWorkspace(id, auth.ctx.workspaceId);
     if (!article) {
       return NextResponse.json({ error: "文章不存在" }, { status: 404 });
     }
@@ -47,42 +56,52 @@ export async function POST(req: Request, ctx: Ctx) {
     const byFamily = new Map<
       string,
       {
-        family: ReturnType<typeof platformFamily>;
+        family: string;
         familyLabel: string;
         platforms: PlatformId[];
         title: string;
         content: string;
         markdown: string;
         summary: string;
+        cover?: string;
         usedVariant: boolean;
       }
     >();
 
     for (const platform of platforms) {
-      const family = platformFamily(platform);
+      const bodyFamily = platformFamily(platform);
+      const family = platform === "douyin" ? "douyin" : bodyFamily;
       const content = publishContentForPlatform(id, platform, {
         mediaOrigin: origin,
       });
       if (!content) continue;
+      if (platform === "douyin") {
+        content.title = await rewriteDouyinArticleTitle(
+          content.title,
+          content.bodyText,
+        );
+      }
       const existing = byFamily.get(family);
       if (existing) {
         existing.platforms.push(platform);
         continue;
       }
-      const variant = getVariant(id, family);
+      const variant = getVariant(id, bodyFamily);
       // Absolutize first, then push local /api/uploads to public CDN (Zhihu
       // server-side fetch cannot reach 127.0.0.1).
       const absoluteHtml = absolutizeHtmlMedia(content.bodyHtml, origin);
       const absoluteMd = absolutizeMarkdownMedia(content.bodyMarkdown, origin);
       const [html, markdown] = await Promise.all([
-        publishLocalMediaInHtml(absoluteHtml),
-        publishLocalMediaInMarkdown(absoluteMd),
+        publishLocalMediaInHtml(absoluteHtml, origin),
+        publishLocalMediaInMarkdown(absoluteMd, origin),
       ]);
-      assertPublicMediaOrThrow(html, `${familyLabel(family)}正文`);
-      assertPublicMediaOrThrow(markdown, `${familyLabel(family)} Markdown`);
+      const label =
+        platform === "douyin" ? "抖音文章" : familyLabel(bodyFamily);
+      assertPublicMediaOrThrow(html, `${label}正文`);
+      assertPublicMediaOrThrow(markdown, `${label} Markdown`);
       byFamily.set(family, {
         family,
-        familyLabel: familyLabel(family),
+        familyLabel: label,
         platforms: [platform],
         title: content.title,
         content: html,
@@ -92,8 +111,59 @@ export async function POST(req: Request, ctx: Ctx) {
       });
     }
 
+    const thumb =
+      (await publishLocalCoverPath(article.cover_path, origin)) ||
+      (article.cover_path?.startsWith("http")
+        ? article.cover_path
+        : article.cover_path
+          ? `${origin}/api/uploads/${article.cover_path.split("/").pop()}`
+          : undefined);
+
+    let masterHtml = await publishLocalMediaInHtml(
+      absolutizeHtmlMedia(
+        ensureCoverInBodyHtml(
+          article.body,
+          article.cover_path,
+          article.cover_path?.startsWith("http")
+            ? article.cover_path
+            : undefined,
+          article.title,
+          origin,
+        ),
+        origin,
+      ),
+      origin,
+    );
+    assertPublicMediaOrThrow(masterHtml, "主稿正文");
+
+    if (thumb) {
+      masterHtml = upsertCoverInBody(masterHtml, thumb, article.title);
+      for (const group of byFamily.values()) {
+        group.cover = thumb;
+        group.content = upsertCoverInBody(group.content, thumb, group.title);
+        group.markdown = htmlToMarkdown(group.content);
+      }
+    }
+
+    if (masterHtml !== article.body) {
+      const patch: Parameters<typeof updateArticle>[1] = { body: masterHtml };
+      if (
+        article.cover_path &&
+        !article.cover_path.startsWith("http") &&
+        thumb &&
+        !hasNonPublicMedia(thumb)
+      ) {
+        patch.cover_path = thumb;
+      }
+      updateArticle(id, patch);
+      await persistCloudflareDb();
+    }
+
     return NextResponse.json({
       groups: [...byFamily.values()],
+      masterContent: masterHtml,
+      thumb: thumb || undefined,
+      cover: thumb || undefined,
       variants,
       missingFamilies: platforms
         .map((p) => platformFamily(p))

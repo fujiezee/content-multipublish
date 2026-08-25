@@ -4,7 +4,7 @@ import { createSimplePublisher } from "@/lib/publishers/helpers";
 export const aliyunPublisher = createSimplePublisher({
   id: "aliyun",
   name: "阿里云开发者",
-  loginUrl: "https://account.aliyun.com/login/login.htm",
+  loginUrl: "https://developer.aliyun.com/article/new",
   editorUrl: "https://developer.aliyun.com/article/new",
   cookieOrigins: ["https://developer.aliyun.com", "https://aliyun.com"],
   cookieNamePattern: /c_csrf|login_aliyunid|aliyun_choice/i,

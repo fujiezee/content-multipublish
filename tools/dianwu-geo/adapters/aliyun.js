@@ -5,7 +5,10 @@
  * 草稿：POST /developer/api/articleDraft/putDraft?p_csrf=
  * 图片：getImageUploadUrl → PUT
  */
-import { getCookieValue } from "./_cookie.js";
+import { findCookieValue, getCookieValue } from "./_cookie.js";
+import {
+  processAndAssertImages,
+} from "./_images.js";
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -42,55 +45,86 @@ export function createAliyunAdapter(BaseAdapter) {
         .trim();
     }
 
+    async readCsrfCookie() {
+      const domains = [
+        "developer.aliyun.com",
+        ".developer.aliyun.com",
+        ".aliyun.com",
+        "aliyun.com",
+      ];
+      const urls = [
+        "https://developer.aliyun.com/",
+        "https://developer.aliyun.com/article/new",
+      ];
+      for (const name of ["c_csrf", "csrf", "_csrf", "XSRF-TOKEN"]) {
+        const value = await getCookieValue(this.runtime, domains, name, urls);
+        if (value) return value;
+      }
+      return findCookieValue(domains, /^(c_csrf|csrf|_csrf|xsrf-token)$/i);
+    }
+
     async ensureCsrf() {
       if (this.csrf) return this.csrf;
-      const csrf = await getCookieValue(
-        this.runtime,
-        [
-          "developer.aliyun.com",
-          ".aliyun.com",
-          "aliyun.com",
-          ".developer.aliyun.com",
-        ],
-        "c_csrf",
-        ["https://developer.aliyun.com/"],
-      );
+      let csrf = await this.readCsrfCookie();
+      if (!csrf) {
+        try {
+          await this.runtime.fetch("https://developer.aliyun.com/", {
+            credentials: "include",
+            headers: {
+              Accept: "text/html",
+              Referer: "https://developer.aliyun.com/",
+            },
+          });
+        } catch {
+          // still try cookie again
+        }
+        csrf = await this.readCsrfCookie();
+      }
       if (!csrf) {
         throw new Error(
-          "未检测到 c_csrf，请先在 Chrome 打开并登录 developer.aliyun.com",
+          "已登录阿里云控制台还不够。请在 Chrome 打开 developer.aliyun.com（开发者社区）并保持登录，再点「刷新登录」",
         );
       }
       this.csrf = csrf;
       return csrf;
     }
 
+    async fetchUser() {
+      const response = await this.runtime.fetch(
+        "https://developer.aliyun.com/developer/api/my/user/getUser",
+        {
+          credentials: "include",
+          headers: {
+            Accept: "application/json",
+            Referer: "https://developer.aliyun.com/",
+            Origin: "https://developer.aliyun.com",
+          },
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      return data;
+    }
+
     async checkAuth() {
       try {
-        await this.ensureCsrf();
-        const response = await this.runtime.fetch(
-          "https://developer.aliyun.com/developer/api/my/user/getUser",
-          {
-            credentials: "include",
-            headers: {
-              Accept: "application/json",
-              Referer: "https://developer.aliyun.com/",
-              Origin: "https://developer.aliyun.com",
-            },
-          },
-        );
-        const data = await response.json();
+        const data = await this.fetchUser();
         const user = data?.data;
-        if (!user?.uccId && !user?.nickname) {
+        if (user?.uccId || user?.nickname) {
+          try {
+            await this.ensureCsrf();
+          } catch {
+            // 登录态以 getUser 为准；写草稿时再要 c_csrf
+          }
           return {
-            isAuthenticated: false,
-            error: data?.message || "未登录",
+            isAuthenticated: true,
+            userId: String(user.uccId || user.userId || user.nickname),
+            username: user.nickname || String(user.uccId),
+            avatar: user.avatar,
           };
         }
         return {
-          isAuthenticated: true,
-          userId: String(user.uccId || user.userId || user.nickname),
-          username: user.nickname || String(user.uccId),
-          avatar: user.avatar,
+          isAuthenticated: false,
+          error: data?.message || "未登录阿里云开发者社区",
         };
       } catch (error) {
         return {
@@ -186,12 +220,13 @@ export function createAliyunAdapter(BaseAdapter) {
 
         let md = String(article.markdown || "").trim();
         if (!md) md = this.htmlToMarkdown(article.html || "");
-        md = await this.processImages(
+        md = await processAndAssertImages(
+          this,
           md,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["aliyuncs.com", "aliyun.com", "alicdn.com"],
+          {skipPatterns: ["aliyuncs.com", "aliyun.com", "alicdn.com"],
             onProgress: options?.onImageProgress,
+            platformName: "阿里云开发者社区",
           },
         );
 

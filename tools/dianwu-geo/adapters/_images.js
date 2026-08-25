@@ -18,11 +18,62 @@ export function extractImageSrcs(content) {
   while ((m = imgRe.exec(html))) {
     if (m[1]) srcs.push(m[1]);
   }
+  const srcsetRe = /\ssrcset=["']([^"']+)["']/gi;
+  while ((m = srcsetRe.exec(html))) {
+    for (const part of String(m[1]).split(",")) {
+      const url = part.trim().split(/\s+/)[0];
+      if (url) srcs.push(url);
+    }
+  }
   const mdRe = /!\[[^\]]*]\(([^)\s]+)\)/g;
   while ((m = mdRe.exec(html))) {
     if (m[1]) srcs.push(m[1]);
   }
   return srcs;
+}
+
+/**
+ * Collapse `https://host/../../../public/foo.png` (and relative `../public/`)
+ * into a fetchable URL. Next.js serves /public at the site root.
+ * @param {string} src
+ * @param {string} [origin]
+ */
+export function normalizeFetchableImageUrl(src, origin) {
+  const s = String(src || "").trim();
+  if (!s || s.startsWith("data:") || s.startsWith("blob:")) return s;
+  try {
+    const href = /^https?:\/\//i.test(s)
+      ? new URL(s).href
+      : s.startsWith("//")
+        ? new URL(`https:${s}`).href
+        : origin
+          ? new URL(s, origin.endsWith("/") ? origin : `${origin}/`).href
+          : s;
+    const u = new URL(href);
+    u.pathname = u.pathname.replace(/^\/public\//, "/");
+    return u.href;
+  } catch {
+    return s;
+  }
+}
+
+function rewriteContentImageUrls(content, origin) {
+  return String(content || "").replace(
+    /(<img\b[^>]*?\bsrc=["'])([^"']+)(["'])/gi,
+    (_, pre, src, post) => `${pre}${normalizeFetchableImageUrl(src, origin)}${post}`,
+  );
+}
+
+function inferMediaOrigin(content) {
+  const m = String(content || "").match(
+    /https?:\/\/(?:www\.)?dianwu\.(?:tech|ai)\b[^"'\s]*/i,
+  );
+  if (!m) return undefined;
+  try {
+    return new URL(m[0]).origin;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -122,7 +173,22 @@ export function patchBaseProcessImages(BaseAdapter) {
     uploadFn,
     options,
   ) {
-    const out = await original.call(this, content, uploadFn, options);
+    const origin = inferMediaOrigin(content);
+    const rewritten = rewriteContentImageUrls(content, origin);
+    const wrapped = async (src) => {
+      const url = normalizeFetchableImageUrl(src, origin);
+      try {
+        return await uploadFn(url);
+      } catch (err) {
+        if (/\/public\/|\.\.\//.test(String(src))) {
+          throw new Error(
+            `图片不是可拉取的公网地址（${url.slice(0, 96)}）。请在编辑器里删掉这张图并重新上传后再同步。`,
+          );
+        }
+        throw err;
+      }
+    };
+    const out = await original.call(this, rewritten, wrapped, options);
     const skipPatterns = options?.skipPatterns || [];
     // Fill-confirm platforms may keep third-party public CDNs.
     if (options?.allowPublicExternal) {

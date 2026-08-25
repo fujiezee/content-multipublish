@@ -1,9 +1,17 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 import { DEBUG_DIR, ensureDataDirs, sessionPath } from "@/lib/paths";
 import type { PlatformId } from "@/lib/types";
+
+async function loadChromium() {
+  if (process.env.CLOUDFLARE === "1") {
+    throw new Error("云端发稿请用点物助手，本机浏览器自动化不可用");
+  }
+  const { chromium } = await import("playwright");
+  return chromium;
+}
 
 // Keep headed / headless browsers separate — never close one to launch the other.
 // Otherwise a background session check (headless) kills an in-flight publish window.
@@ -73,11 +81,13 @@ async function launchBrowser(headless: boolean): Promise<Browser> {
   };
   try {
     const chrome = systemChromePath();
+    const chromium = await loadChromium();
     if (chrome) {
       return await chromium.launch({ ...common, executablePath: chrome });
     }
     return await chromium.launch(common);
   } catch (err) {
+    const chromium = await loadChromium();
     return chromium.launch(common).catch(() => {
       throw err;
     });
@@ -124,6 +134,33 @@ export async function openContext(
     storageState: useSession ? stateFile : undefined,
   });
 
+  return { browser, context };
+}
+
+/** Own Chrome process — do not share the headed singleton (HMR leftovers close tabs). */
+export async function openDetachedHeadedContext(
+  platform: PlatformId,
+  options: { useSession?: boolean } = {},
+): Promise<{ browser: Browser; context: BrowserContext }> {
+  ensureDataDirs();
+  delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+  const chrome = systemChromePath();
+  const chromium = await loadChromium();
+  const browser = await chromium.launch({
+    headless: false,
+    executablePath: chrome || undefined,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  const stateFile = sessionPath(platform);
+  const useSession = options.useSession !== false && fs.existsSync(stateFile);
+  const context = await browser.newContext({
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
+    viewport: { width: 1360, height: 900 },
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    storageState: useSession ? stateFile : undefined,
+  });
   return { browser, context };
 }
 

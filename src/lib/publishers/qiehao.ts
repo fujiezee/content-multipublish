@@ -4,7 +4,7 @@ import { createSimplePublisher } from "@/lib/publishers/helpers";
 export const qiehaoPublisher = createSimplePublisher({
   id: "qiehao",
   name: "企鹅号",
-  loginUrl: "https://om.qq.com/userAuth/index",
+  loginUrl: "https://om.qq.com/article/articlePublish",
   editorUrl: "https://om.qq.com/article/articlePublish",
   cookieOrigins: ["https://om.qq.com", "https://qq.com"],
   cookieNamePattern: /uin|skey|p_skey|om_|RK|pt/i,

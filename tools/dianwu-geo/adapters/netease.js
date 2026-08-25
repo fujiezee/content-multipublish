@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 网易号 — 新版 publishV2.do（旧 publish.do 会提示「旧版文章发布页已…」）
  *
@@ -272,12 +275,13 @@ export function createNeteaseAdapter(BaseAdapter) {
         title = title.slice(0, 64);
 
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["126.net", "163.com"],
+          {skipPatterns: ["126.net", "163.com"],
             onProgress: options?.onImageProgress,
+            platformName: "网易号",
           },
         );
 

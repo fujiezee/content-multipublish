@@ -1,0 +1,63 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "dianwu-geo-app",
+  "main": "cf/worker-entry.mjs",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "observability": {
+    "enabled": true
+  },
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "r2_buckets": [
+    {
+      "binding": "GEO_DATA",
+      "bucket_name": "vigma-files"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "NEXT_CACHE_DO_QUEUE", "class_name": "DOQueueHandler" },
+      { "name": "NEXT_TAG_CACHE_DO_SHARDED", "class_name": "DOShardedTagCache" },
+      { "name": "NEXT_CACHE_DO_PURGE", "class_name": "BucketCachePurge" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "DOQueueHandler",
+        "DOShardedTagCache",
+        "BucketCachePurge"
+      ]
+    }
+  ],
+  "vars": {
+    "CLOUDFLARE": "1",
+    "AUTH_REQUIRED": "true",
+    "DIANWU_CLOUD": "1",
+    "SITE_URL": "https://dianwu.tech",
+    "VIGMA_API_URL": "https://api.vigma.app",
+    "PUBLIC_MEDIA_UPLOAD_URL": "https://cdn.dianwu.ai/upload",
+    "PUBLIC_MEDIA_BASE_URL": "https://cdn.dianwu.ai/files",
+    "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
+    "DEEPSEEK_MODEL": "deepseek-chat",
+    "DEEPSEEK_REASONING_MODEL": "deepseek-reasoner",
+    "OPENAI_BASE_URL": "https://api.openai-proxy.org/v1",
+    "GEMINI_IMAGE_MODEL": "gemini-3.1-flash-image",
+    "QWEN_BASE_URL": "https://llm-8rtgyugl2ht4bag2.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "SUNO_API_BASE_URL": "https://api.sunoapi.org",
+    "SUNO_PROVIDER": "sunoapi",
+    "SUNO_MODEL": "V5",
+    "CLOUDFLARE_ACCOUNT_ID": "4bdb28422653f9ac6aee3868f8ef3962"
+  }
+}

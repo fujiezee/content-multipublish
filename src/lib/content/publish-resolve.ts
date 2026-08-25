@@ -1,3 +1,4 @@
+import { ensureStoredInfographicsInHtml } from "@/lib/ai/apply-master-infographics";
 import {
   articleToPublishContent,
   polishForPlatform,
@@ -17,15 +18,15 @@ export function publishContentForPlatform(
   if (!article) return null;
   const family = platformFamily(platform);
   const variant = getVariant(articleId, family);
+  const rawBody = variant?.body?.trim() ? variant.body : article.body;
+  const body = ensureStoredInfographicsInHtml(articleId, family, rawBody);
   const content = articleToPublishContent(article, {
     mediaOrigin: options?.mediaOrigin,
-    variant: variant
-      ? {
-          title: variant.title,
-          body: variant.body,
-          summary: variant.summary,
-        }
-      : null,
+    variant: {
+      title: variant?.title || article.title,
+      body,
+      summary: variant?.summary || article.summary,
+    },
   });
   return polishForPlatform(platform, content);
 }
@@ -35,10 +36,14 @@ export function validateArticleForPlatforms(
   platforms: PlatformId[],
 ): Record<string, string[]> {
   const warnings: Record<string, string[]> = {};
+  const article = getArticle(articleId);
   for (const platform of platforms) {
     const content = publishContentForPlatform(articleId, platform);
     if (!content) continue;
-    const w = validateForPlatform(platform, content);
+    const family = platformFamily(platform);
+    const variant = article ? getVariant(articleId, family) : null;
+    const sourceTitle = (variant?.title || article?.title || "").trim();
+    const w = validateForPlatform(platform, content, sourceTitle);
     if (w.length) warnings[platform] = w;
   }
   return warnings;

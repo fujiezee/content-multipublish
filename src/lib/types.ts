@@ -100,6 +100,40 @@ export interface ArticleInfographic {
   created_at: string;
 }
 
+export type PodcastMode = "dialogue" | "solo";
+export type PodcastStatus = "idle" | "pending" | "ready" | "failed";
+export type PodcastSpeaker = "host" | "guest";
+
+export type PodcastTurn = {
+  index: number;
+  speaker: PodcastSpeaker;
+  name: string;
+  text: string;
+  audioUrl: string;
+  durationSec: number;
+  /** 配音演法，不进听众看到的正文 */
+  feel?: string;
+};
+
+/** 文章的听读版：同一篇 GEO 稿的对谈/口播，不走短视频合集 */
+export interface ArticlePodcast {
+  id: string;
+  article_id: string;
+  title: string;
+  mode: PodcastMode;
+  host_voice: string;
+  guest_voice: string;
+  tts_model: string;
+  status: PodcastStatus;
+  error: string | null;
+  audio_url: string | null;
+  cover_url: string | null;
+  duration_sec: number;
+  turns_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type VideoScriptGenre = "edu" | "drama";
 
 export type VideoScriptHookStyle =
@@ -109,12 +143,215 @@ export type VideoScriptHookStyle =
   | "argue"
   | "expose"
   | "contrast"
-  | "drama";
+  | "drama"
+  | "isekai"
+  | "rebirth"
+  | "system"
+  | "tycoon"
+  | "revenge"
+  | "romance"
+  | "workplace"
+  | "court";
 
 export type VideoSpeakMode = "narration" | "dialogue";
+export type ShotDelivery = "line" | "inner";
+
+export const SHOT_SOUND_ROLES = ["speak", "inner", "hit", "hold"] as const;
+export type ShotSoundRole = (typeof SHOT_SOUND_ROLES)[number];
+
+export function normalizeSoundRole(value: unknown): ShotSoundRole | "" {
+  return (SHOT_SOUND_ROLES as readonly string[]).includes(String(value || ""))
+    ? (value as ShotSoundRole)
+    : "";
+}
+
+export const SHOT_JOINS = ["continue", "cut", "away"] as const;
+export type ShotJoin = (typeof SHOT_JOINS)[number];
+
+export function normalizeShotJoin(value: unknown): ShotJoin | "" {
+  if (value === "continue" || value === "cut" || value === "away") return value;
+  if (value === "接戏" || value === "同场") return "continue";
+  if (value === "切镜" || value === "硬切") return "cut";
+  if (value === "换场") return "away";
+  return "";
+}
+export type VideoVoicePath = "native" | "tts" | "lipsync";
+export type InnerVoiceLevel = "off" | "low" | "mid" | "high";
+
+const INNER_LEVEL_ALIASES: Record<string, InnerVoiceLevel> = {
+  off: "off",
+  关: "off",
+  low: "low",
+  压: "low",
+  轻: "low",
+  mid: "mid",
+  震: "mid",
+  中: "mid",
+  high: "high",
+  炸: "high",
+  强: "high",
+};
+
+export function resolveInnerVoice(raw: unknown): InnerVoiceLevel {
+  const t = String(raw || "").trim();
+  return INNER_LEVEL_ALIASES[t] || INNER_LEVEL_ALIASES[t.toLowerCase()] || "off";
+}
+
+export function innerVoiceMark(
+  level?: InnerVoiceLevel | "" | null,
+): "·压" | "·震" | "·炸" | "" {
+  if (level === "high") return "·炸";
+  if (level === "mid") return "·震";
+  if (level === "low") return "·压";
+  return "";
+}
+
+export function innerVoiceLabel(level: InnerVoiceLevel): string {
+  return { off: "关", low: "压", mid: "震", high: "炸" }[level];
+}
+
+export function resolveVoicePath(raw: unknown): VideoVoicePath {
+  if (raw === "tts" || raw === "lipsync") return raw;
+  return "native";
+}
+
+export const SHOT_SIZES = ["特写", "近景", "中景", "远景"] as const;
+export type ShotSize = (typeof SHOT_SIZES)[number];
+
+export const SHOT_ANGLES = ["平视", "仰视", "俯视", "过肩", "侧"] as const;
+export type ShotAngle = (typeof SHOT_ANGLES)[number];
+
+export type ShotPlate = {
+  size: ShotSize;
+  angle: ShotAngle;
+  framing: string;
+  light: string;
+  grade: string;
+  motion: string;
+};
+
+export type ShotQaFlag = "late-open" | "same-size" | "no-speech" | "voice-drift";
+
+export function shotCanLipSync(
+  shot?: Pick<
+    VideoShot,
+    "clipUrl" | "delivery" | "speaker" | "voiceover" | "soundRole"
+  > | null,
+): boolean {
+  if (!shot?.clipUrl?.trim() || shotIsInner(shot)) return false;
+  const role = normalizeSoundRole(shot.soundRole);
+  if (role === "inner" || role === "hit" || role === "hold") return false;
+  return Boolean(String(shot.voiceover || "").trim());
+}
+
+/** 口播 TTS 对口型：静帧已过片、已锁声，还没有成片。 */
+export function shotCanAudioDrive(
+  shot?: Pick<
+    VideoShot,
+    | "clipUrl"
+    | "speechUrl"
+    | "framesOk"
+    | "startUrl"
+    | "sceneUrl"
+    | "endUrl"
+    | "delivery"
+    | "speaker"
+    | "voiceover"
+    | "soundRole"
+  > | null,
+): boolean {
+  if (!shot?.speechUrl?.trim() || shotIsInner(shot)) return false;
+  if (!shotHasKeyframes(shot) || !shot.framesOk) return false;
+  if (shot.clipUrl?.trim()) return false;
+  const role = normalizeSoundRole(shot.soundRole);
+  if (role === "inner" || role === "hit" || role === "hold") return false;
+  return Boolean(String(shot.voiceover || "").trim());
+}
+
+/** 开口镜必须先锁 TTS。内心/一声/留白不走这道闸。 */
+export function shotNeedsLockedSpeech(
+  shot?: Pick<
+    VideoShot,
+    "delivery" | "speaker" | "voiceover" | "soundRole"
+  > | null,
+): boolean {
+  if (!shot || shotIsInner(shot)) return false;
+  const role = normalizeSoundRole(shot.soundRole);
+  if (role === "inner" || role === "hit" || role === "hold") return false;
+  if (role === "speak") return true;
+  return Boolean(String(shot.voiceover || "").trim());
+}
+
+export function speakShotsMissingLock(
+  shots: Array<
+    Pick<
+      VideoShot,
+      "index" | "delivery" | "speaker" | "voiceover" | "soundRole" | "speechUrl"
+    >
+  >,
+): number[] {
+  return shots
+    .filter((shot) => shotNeedsLockedSpeech(shot) && !shot.speechUrl?.trim())
+    .map((shot) => shot.index)
+    .sort((a, b) => a - b);
+}
+
+export const DEFAULT_SPEAK_MODE: VideoSpeakMode = "dialogue";
 
 export function normalizeSpeakMode(value: unknown): VideoSpeakMode {
   return value === "dialogue" ? "dialogue" : "narration";
+}
+
+const INNER_TAG =
+  /[（(](?:内心|独白|心里)(?:[·・.](压|震|炸|轻|中|强|low|mid|high))?[）)]/i;
+
+export function parseInnerLevel(
+  raw: unknown,
+): Exclude<InnerVoiceLevel, "off"> | "" {
+  const direct = resolveInnerVoice(raw);
+  if (direct !== "off") return direct;
+  const m = String(raw || "").match(INNER_TAG);
+  if (!m?.[1]) return "";
+  const lvl = resolveInnerVoice(m[1]);
+  return lvl === "off" ? "" : lvl;
+}
+
+export function isInnerTag(value?: string | null): boolean {
+  return INNER_TAG.test(String(value || ""));
+}
+
+export function stripInnerTag(value?: string | null): string {
+  return String(value || "").replace(INNER_TAG, "").trim();
+}
+
+export function normalizeShotDelivery(raw: unknown): ShotDelivery | "" {
+  const t = String(raw || "").trim();
+  if (t === "inner" || t === "独白" || t === "内心" || isInnerTag(t)) return "inner";
+  if (t === "line" || t === "对白") return "line";
+  return "";
+}
+
+export function shotIsInner(
+  shot?: Pick<VideoShot, "delivery" | "speaker" | "voiceover"> | null,
+): boolean {
+  if (!shot) return false;
+  if (shot.delivery === "inner") return true;
+  return isInnerTag(shot.speaker) || isInnerTag(String(shot.voiceover || "").slice(0, 20));
+}
+
+export function shotInnerLevel(
+  shot?: Pick<
+    VideoShot,
+    "delivery" | "speaker" | "voiceover" | "innerLevel"
+  > | null,
+  seriesLevel?: InnerVoiceLevel,
+): Exclude<InnerVoiceLevel, "off"> | "" {
+  if (!shotIsInner(shot)) return "";
+  if (shot?.innerLevel) return shot.innerLevel;
+  const fromText = parseInnerLevel(`${shot?.speaker || ""}${shot?.voiceover || ""}`);
+  if (fromText) return fromText;
+  const series = resolveInnerVoice(seriesLevel);
+  return series === "off" ? "high" : series;
 }
 
 export type VideoEpisodeStatus = "idle" | "generating" | "ready" | "failed";
@@ -128,27 +365,128 @@ export type VideoShot = {
   imagePrompt: string;
   speaker?: string;
   speakerId?: string;
+  voiceId?: string;
+  /** line=张嘴说，inner=心里的声音，闭嘴 */
+  delivery?: ShotDelivery;
+  /** 内心强烈度：压|震|炸。只在 delivery=inner 时有用 */
+  innerLevel?: Exclude<InnerVoiceLevel, "off">;
+  /** 钩|共|顶|打|停，这一镜调用观众哪一下 */
+  beat?: string;
+  /** 开口|内心|一声|留白，这一镜耳朵听什么 */
+  soundRole?: ShotSoundRole;
+  /** 接戏=接着上镜尾帧；切镜=同场换构图；换场=换地方 */
+  join?: ShotJoin;
+  /** 镜头看谁：说话的人 / 挨打的人 / 特写 */
+  look?: string;
+  /** 这一镜唯一运镜：推镜|拉镜|横移|固定。景别在 plate.size */
+  camera?: string;
+  /** 七要素：景别/角度/构图/光影/色调/动势。转场是 join */
+  plate?: ShotPlate;
+  /** 成片开口秒数，拉片用。本机 RMS 测出来 */
+  speechOnsetSec?: number;
+  /** 这一镜看得见的道具名，对应本剧道具设定图 */
+  props?: string[];
   sceneUrl?: string;
+  startUrl?: string;
+  endUrl?: string;
+  /** 模型刚吐出的原片。合成只读副本，不得改这个文件 */
   clipUrl?: string;
+  rawClipUrl?: string;
+  lastFrameUrl?: string;
+  /** 对口型用的参考音：旁白是配音，对白是模型先出声再抽出来的 */
+  speechUrl?: string;
+  /** 头尾静帧人点过才能出片 */
+  framesOk?: boolean;
+  /** 同镜第二条成片，选片后和 clipUrl 对调 */
+  clipAltUrl?: string;
 };
+
+export function shotRawClipUrl(
+  shot?: Pick<VideoShot, "rawClipUrl" | "clipUrl"> | null,
+): string {
+  return shot?.rawClipUrl?.trim() || shot?.clipUrl?.trim() || "";
+}
+
+export function shotStartUrl(
+  shot?: Pick<VideoShot, "startUrl" | "sceneUrl"> | null,
+): string {
+  return shot?.startUrl?.trim() || shot?.sceneUrl?.trim() || "";
+}
+
+export function shotEndUrl(shot?: Pick<VideoShot, "endUrl"> | null): string {
+  return shot?.endUrl?.trim() || "";
+}
+
+export function shotTailUrl(
+  shot?: Pick<VideoShot, "endUrl" | "lastFrameUrl"> | null,
+): string {
+  return shot?.endUrl?.trim() || shot?.lastFrameUrl?.trim() || "";
+}
+
+export function shotHasKeyframes(
+  shot?: Pick<VideoShot, "startUrl" | "sceneUrl" | "endUrl"> | null,
+): boolean {
+  return Boolean(shot && shotStartUrl(shot) && shotEndUrl(shot));
+}
+
+export function shotFramesApproved(shot: VideoShot): boolean {
+  return shotHasKeyframes(shot) && shot.framesOk === true;
+}
+
+export function shotHasImage(
+  shot?: Pick<VideoShot, "startUrl" | "endUrl" | "sceneUrl"> | null,
+): boolean {
+  return Boolean(shotStartUrl(shot) || shotEndUrl(shot));
+}
+
+/** 单镜重出默认参考：先找后面已有图的最近一镜，没有再找前面。 */
+export function defaultRefShotIndex(
+  shots: Array<Pick<VideoShot, "index" | "startUrl" | "endUrl" | "sceneUrl">>,
+  currentIndex: number,
+): number | undefined {
+  const ordered = [...shots].sort((a, b) => a.index - b.index);
+  const later = ordered.find(
+    (shot) => shot.index > currentIndex && shotHasImage(shot),
+  );
+  if (later) return later.index;
+  const earlier = [...ordered]
+    .reverse()
+    .find((shot) => shot.index < currentIndex && shotHasImage(shot));
+  return earlier?.index;
+}
 
 export interface ArticleVideoSeries {
   id: string;
   article_id: string;
   genre: VideoScriptGenre;
   hook_style: string;
+  look_style: string;
+  props_json: string;
+  wardrobe_json: string;
   title: string;
   logline: string;
+  premise: string;
   audience: string;
   notes: string;
   episode_count: number;
+  duration_sec: number;
   character_id: string | null;
   cast_json: string;
   speak_mode: VideoSpeakMode;
+  inner_voice: InnerVoiceLevel;
   voice_id: string;
+  lyrics: string;
+  music_json: string;
   created_at: string;
   updated_at: string;
 }
+
+export type ScriptProp = {
+  id: string;
+  name: string;
+  look: string;
+  url: string;
+};
 
 export type VideoCharacterPhoto = { url: string };
 
@@ -179,6 +517,8 @@ export interface StudioCharacter {
   source: CharacterSource;
   article_id: string | null;
   voice_id: string;
+  /** 角色档案：性别年龄、五官衣服、标志、定装、习惯 */
+  look: string;
   created_at: string;
   updated_at: string;
 }
@@ -195,9 +535,24 @@ export type CharacterCatalogItem = {
   article_id: string | null;
   article_title: string | null;
   voice_id: string;
+  look: string;
   scripts: CharacterScriptRef[];
   photos: VideoCharacterPhoto[];
   angles: VideoCharacterAngle[];
+  updated_at: string;
+};
+
+/** 内容工厂里用户上传/录音克隆的音色 */
+export type StudioVoice = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  hint: string;
+  provider: string;
+  provider_voice_id: string;
+  provider_model: string;
+  sample_url: string;
+  created_at: string;
   updated_at: string;
 };
 
@@ -217,6 +572,63 @@ export type VideoCatalogItem = {
   updated_at: string;
 };
 
+/** 已出过可听曲目的剧本系列（音乐页目录） */
+export type MusicCatalogItem = {
+  article_id: string;
+  article_title: string;
+  series_id: string;
+  series_title: string;
+  genre: VideoScriptGenre;
+  hook_style?: string;
+  track_count: number;
+  music_status: string;
+  updated_at: string;
+};
+
+/** 已生成可听对谈的文章（播客页目录） */
+export type PodcastCatalogItem = {
+  article_id: string;
+  article_title: string;
+  podcast_title: string;
+  mode: PodcastMode;
+  audio_url: string | null;
+  cover_url: string | null;
+  duration_sec: number;
+  turn_count: number;
+  turns: PodcastTurn[];
+  updated_at: string;
+};
+
+export interface VideoPublishJob {
+  id: string;
+  episode_id: string;
+  article_id: string;
+  platform: string;
+  status: JobStatus;
+  error: string | null;
+  result_url: string | null;
+  created_at: string;
+  updated_at: string;
+  episode_no?: number;
+  episode_title?: string;
+  series_title?: string;
+}
+
+export interface MusicPublishJob {
+  id: string;
+  article_id: string;
+  series_id: string;
+  track_id: string;
+  platform: string;
+  status: JobStatus;
+  error: string | null;
+  result_url: string | null;
+  created_at: string;
+  updated_at: string;
+  series_title?: string;
+  song_title?: string;
+}
+
 export interface ArticleVideoEpisode {
   id: string;
   series_id: string;
@@ -229,9 +641,14 @@ export interface ArticleVideoEpisode {
   next_hook: string;
   duration_sec: number;
   shots_json: string;
+  director_json?: string;
   confirmed: number;
   video_status: VideoEpisodeStatus;
   video_url: string | null;
+  source_video_url?: string | null;
+  subtitle_url?: string | null;
+  caption_style_json?: string | null;
+  caption_cues_json?: string | null;
   video_error: string | null;
   video_model: string | null;
   created_at: string;
@@ -250,6 +667,8 @@ export {
   isPlatformFamily,
   defaultFamilyForKind,
   familyLabel,
+  WRITING_PLATFORM_FAMILIES,
+  WRITING_ONLY_FAMILIES,
 } from "@/lib/content/platform-families";
 
 export interface ArticleVariant {
@@ -316,12 +735,24 @@ export interface PublishResult {
 /** 语料库条目分类 */
 export type CorpusCategory = "brand" | "story" | "product" | "style" | "other";
 
+/** 语料配图。截图必须有说明，引用时模型和读者才知道图里是什么。 */
+export type CorpusAssetKind = "screenshot" | "image";
+
+export interface CorpusAsset {
+  id: string;
+  url: string;
+  path?: string;
+  caption: string;
+  kind: CorpusAssetKind;
+}
+
 export interface CorpusItem {
   id: string;
   title: string;
   category: CorpusCategory;
   tags: string;
   content: string;
+  assets?: CorpusAsset[];
   created_at: string;
   updated_at: string;
   workspace_id?: string | null;
@@ -331,12 +762,23 @@ export interface CorpusItem {
 export type CopywritingKind =
   | "brand_intro"
   | "product"
+  | "marketing"
+  | "oral"
   | "social"
   | "article"
-  | "slogan";
+  | "slogan"
+  | "script_outline";
+
+/** 营销文案路子：同一套挖点，两种发动机。 */
+export type MarketingAngle = "anxiety" | "hope";
 
 /** AI 文案风格 */
-export type CopywritingStyle = "default" | "dan_koe" | "jinqiang" | "lijiaoshou";
+export type CopywritingStyle =
+  | "default"
+  | "dan_koe"
+  | "jinqiang"
+  | "lijiaoshou"
+  | "conflict_beat";
 
 export const CORPUS_CATEGORIES: {
   id: CorpusCategory;
@@ -357,9 +799,24 @@ export const COPYWRITING_KINDS: {
 }[] = [
   { id: "brand_intro", label: "品牌介绍", hint: "官网 About、一句话介绍" },
   { id: "product", label: "产品文案", hint: "卖点、功能说明、落地页" },
+  {
+    id: "marketing",
+    label: "营销文案",
+    hint: "从语料挖读者的点，贩卖焦虑或期待，再落到产品",
+  },
+  {
+    id: "oral",
+    label: "口播文案",
+    hint: "吸引力口播或对谈稿，连环钩，说话带情绪",
+  },
   { id: "social", label: "社媒短帖", hint: "微博、小红书、朋友圈" },
   { id: "article", label: "长文初稿", hint: "公众号/专栏长文，约 3000–5000 字" },
   { id: "slogan", label: "标语口号", hint: "多条 Slogan 备选" },
+  {
+    id: "script_outline",
+    label: "剧本大纲",
+    hint: "先写戏骨，后面拆短剧时再选古装/职场",
+  },
 ];
 
 export const COPYWRITING_STYLES: {
@@ -383,9 +840,64 @@ export const COPYWRITING_STYLES: {
     label: "李叫兽",
     hint: "认知反转、结构化说理、可转述模型",
   },
+  {
+    id: "conflict_beat",
+    label: "冲突拍",
+    hint: "一集一拍、锁立场、开头钩、集末留钩",
+  },
 ];
 
-/** GEO 挖词：搜索意图分类 */
+export function defaultStyleForKind(kind: CopywritingKind): CopywritingStyle {
+  return kind === "script_outline" ? "conflict_beat" : "default";
+}
+
+export const MARKETING_ANGLES: {
+  id: MarketingAngle;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    id: "anxiety",
+    label: "贩卖焦虑",
+    hint: "把正在忍的代价说透，再给语料产品当出口",
+  },
+  {
+    id: "hope",
+    label: "贩卖期待",
+    hint: "把想站到的那天写清楚，再给语料产品当路径",
+  },
+];
+
+export const ORAL_MODES: {
+  id: PodcastMode;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    id: "solo",
+    label: "单人口播",
+    hint: "一个人钩着往下讲，每段只揭一层",
+  },
+  {
+    id: "dialogue",
+    label: "双人对谈",
+    hint: "问的人追问，答的人每次只揭一层",
+  },
+];
+
+/** 用户蒸馏的写手 Agent，写作风格可反复选用。 */
+export interface WriterAgent {
+  id: string;
+  workspace_id: string;
+  name: string;
+  seed: string;
+  hint: string;
+  instruction: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** GEO 挖词：痛点类型（沿用旧 id，文案按目标用户痛点） */
 export type GeoKeywordIntent =
   | "informational"
   | "howto"
@@ -416,7 +928,7 @@ export interface GeoKeyword {
   created_at: string;
 }
 
-/** AI 写文与长尾词的关联记录（同一长尾词可有多篇） */
+/** AI 写文与痛点的关联记录（同一痛点可有多篇） */
 export interface GeoKeywordArticle {
   id: string;
   keyword_id: string;
@@ -433,12 +945,12 @@ export const GEO_KEYWORD_INTENTS: {
   id: GeoKeywordIntent;
   label: string;
 }[] = [
-  { id: "informational", label: "科普/认知" },
-  { id: "howto", label: "教程/方法" },
-  { id: "comparison", label: "对比/评测" },
-  { id: "commercial", label: "选购/方案" },
-  { id: "local", label: "场景/人群" },
-  { id: "question", label: "问答/解惑" },
+  { id: "informational", label: "搞不懂" },
+  { id: "howto", label: "做不成" },
+  { id: "comparison", label: "选不准" },
+  { id: "commercial", label: "不敢买" },
+  { id: "local", label: "用不上" },
+  { id: "question", label: "不放心" },
 ];
 
 export const PLATFORMS: {
@@ -492,8 +1004,8 @@ export const PLATFORMS: {
   {
     id: "weixin",
     name: "微信公众号",
-    description: "公众号图文（优先存草稿）",
-    limits: "标题建议 ≤ 64 字；自动写入正文并用后台 AI配图设封面后存草稿",
+    description: "公众号图文（扩展写入，待你封面和发表）",
+    limits: "标题建议 ≤ 64 字；扩展写入标题和正文，封面和发表你在打开的页里点",
   },
   {
     id: "bilibili",

@@ -100,4 +100,13 @@
   window.$poster = poster;
   window.$syncer = poster;
   window.__DWGEO_EXTENSION_INSTALLED__ = true;
+  try {
+    var ver =
+      document.documentElement.getAttribute("data-dwgeo-extension-version") ||
+      "";
+    if (ver) {
+      poster.extensionVersion = ver;
+      window.__DWGEO_EXTENSION_VERSION__ = ver;
+    }
+  } catch (_e) {}
 })();

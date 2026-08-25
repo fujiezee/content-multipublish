@@ -8,7 +8,8 @@ export type PlatformFamily =
   | "social"
   | "wechat"
   | "cloud"
-  | "finance";
+  | "finance"
+  | "short_video";
 
 export type VariantSource = "generated" | "adapted" | "manual";
 
@@ -25,7 +26,7 @@ export const PLATFORM_FAMILIES: {
   {
     id: "media",
     label: "资讯媒体",
-    hint: "头条 / 百家号 / 搜狐号等：信息流标题、价值前置",
+    hint: "头条 / 百家号 / 抖音文章等：信息流标题、价值前置",
   },
   {
     id: "knowledge",
@@ -35,7 +36,7 @@ export const PLATFORM_FAMILIES: {
   {
     id: "social",
     label: "社媒短内容",
-    hint: "微博 / 小红书 / 抖音等：短、钩子、口语",
+    hint: "微博 / 小红书等：短、钩子、口语",
   },
   {
     id: "wechat",
@@ -54,9 +55,25 @@ export const PLATFORM_FAMILIES: {
   },
 ];
 
-export const ALL_PLATFORM_FAMILIES: PlatformFamily[] = PLATFORM_FAMILIES.map(
-  (f) => f.id,
-);
+export const WRITING_ONLY_FAMILIES: {
+  id: PlatformFamily;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    id: "short_video",
+    label: "短视频连载",
+    hint: "竖屏短剧总谱：只写戏骨，后面拆集再选古装/职场",
+  },
+];
+
+export const WRITING_PLATFORM_FAMILIES = [
+  ...PLATFORM_FAMILIES,
+  ...WRITING_ONLY_FAMILIES,
+];
+
+export const ALL_PLATFORM_FAMILIES: PlatformFamily[] =
+  WRITING_PLATFORM_FAMILIES.map((f) => f.id);
 
 const PLATFORM_TO_FAMILY: Record<PlatformId, PlatformFamily> = {
   csdn: "tech",
@@ -92,15 +109,19 @@ const PLATFORM_TO_FAMILY: Record<PlatformId, PlatformFamily> = {
 
   weibo: "social",
   xiaohongshu: "social",
-  douyin: "social",
+  douyin: "media",
   x: "social",
   smzdm: "social",
+  shunqi: "media",
+  shunqi_product: "media",
+  bafang: "media",
 
   weixin: "wechat",
 
   tencentcloud: "cloud",
   aliyun: "cloud",
   huaweicloud: "cloud",
+  dianwu: "knowledge",
 
   xueqiu: "finance",
   eastmoney: "finance",
@@ -125,10 +146,20 @@ export function isPlatformFamily(value: unknown): value is PlatformFamily {
 }
 
 export function defaultFamilyForKind(
-  kind: "brand_intro" | "product" | "social" | "article" | "slogan",
+  kind:
+    | "brand_intro"
+    | "product"
+    | "marketing"
+    | "oral"
+    | "social"
+    | "article"
+    | "slogan"
+    | "script_outline",
 ): PlatformFamily {
+  if (kind === "script_outline") return "short_video";
   if (kind === "social") return "social";
-  if (kind === "slogan") return "wechat";
+  if (kind === "slogan" || kind === "marketing") return "wechat";
+  if (kind === "oral") return "social";
   return "tech";
 }
 
@@ -142,6 +173,7 @@ export const FAMILY_CORPUS_CATEGORIES: Record<PlatformFamily, CorpusCategory[]> 
     wechat: ["brand", "story", "product"],
     cloud: ["product", "style", "brand"],
     finance: ["product", "brand", "other"],
+    short_video: ["story", "brand", "product"],
   };
 
 /** Extra terms to boost corpus scoring per family. */
@@ -153,36 +185,43 @@ export const FAMILY_CORPUS_BOOST_TERMS: Record<PlatformFamily, string[]> = {
   wechat: ["品牌", "故事", "价值观", "用户"],
   cloud: ["云", "部署", "容器", "Serverless", "运维"],
   finance: ["风险", "市场", "投研", "基本面", "合规"],
+  short_video: ["冲突", "立场", "对手", "把柄", "站队", "钩子"],
 };
 
 /** Writing / adapt instructions injected into AI prompts. */
 export const FAMILY_INSTRUCTIONS: Record<PlatformFamily, string> = {
   tech: `目标调性：技术社区长文（CSDN/掘金/博客园等）。
-- 总字数 3000–5000 字；5–8 个小标题；讲清原理、步骤、坑与可复现做法。
+- 总字数 3000–5000 字；5–8 个小标题，标题用判断句或具体步骤名，不要「现象/误区/底层原理」栏目。
 - 少硬广与口号；可用产品作案例，但以解决问题为主。
+- 讲清原理、步骤、坑与可复现做法；步骤可以编号，不要把思维框架当目录。
 - 可用少量代码/清单；语气专业、克制。`,
-  media: `目标调性：资讯/信息流媒体（头条/百家号/搜狐号等）。
-- 总字数 2000–4000 字；开篇 3 句内给出核心信息与读者收益。
-- 标题信息密度高，避免夸张承诺与标题党（「必火」「躺赚」等）。
-- 段落短、小标题清晰；硬广软化，合规表述。`,
+  media: `目标调性：资讯/信息流媒体（头条/百家号/搜狐号/抖音文章等）。
+- 总字数 2000–4000 字；开篇 3 句内给出核心判断与读者收益。
+- 标题信息密度高，避免夸张承诺与标题党（「必火」「躺赚」等）。百家号等媒体标题可按各平台自己的上限；不要为了抖音把整族标题压到 30 字。
+- 段落短；小标题必须是判断句，不要「一、现象」咨询作业目录。硬广软化，合规表述。`,
   knowledge: `目标调性：知识社区（知乎/豆瓣/简书等）。
-- 总字数 2500–4500 字；先抛问题或常见误解，再论证。
-- 结构完整：现象 → 原因 → 方法 → 边界；少口号、少鸡汤。
-- 可转述的判断优先于堆砌卖点。`,
-  social: `目标调性：社媒短内容（微博/小红书/抖音等）。
+- 总字数 2500–4500 字；先抛问题或常见误解，再论证。全文只推进一句总判断。
+- 小标题用判断句；不要「现象 → 原因 → 方法」栏目名，不要「从三个层面」「底层逻辑」。
+- 可转述的判断优先于堆砌卖点；少口号、少鸡汤。`,
+  social: `目标调性：社媒短内容（微博/小红书等）。
 - 控制在 150–400 字；强钩子开篇；口语、有节奏；可适量 emoji。
-- 不要长文结构；最多 1 个行动号召；禁止写成提纲式长文。`,
+- 不要长文结构，不要一二三提纲；最多 1 个行动号召。`,
   wechat: `目标调性：微信公众号图文。
 - 总字数 2500–4500 字；标题 ≤ 64 字；段落节奏适合手机阅读。
-- 有品牌温度但不空洞；结尾轻 CTA；避免过度营销话术。`,
+- 有品牌温度但不空洞；小标题用判断句，结构藏在推进里。结尾轻 CTA；避免过度营销话术。`,
   cloud: `目标调性：云厂商开发者社区（腾讯云+/阿里云/华为云）。
 - 总字数 2500–4500 字；偏技术实践与场景落地。
 - 可自然提及云能力，禁止贬低竞品与无依据对比。
-- 步骤可跟做；少软文腔。`,
+- 步骤可跟做；小标题用动作或判断，少软文腔，不要「现象/原理」栏目。`,
   finance: `目标调性：财经社区（雪球/东财等）。
 - 总字数 2000–4000 字；分析克制，必须含风险提示（不构成投资建议）。
 - 禁止荐股、收益承诺、「稳赚/必涨」等表述。
-- 用逻辑与公开信息框架，不编造数据。`,
+- 用公开信息和一条总判断推进，不编造数据；不要「从三个维度拆解」这种目录。`,
+  short_video: `目标调性：竖屏短剧连载总谱（给后面拆集用，不是拿去发的图文）。
+- 1200–2200 字；小标题写清利害、场上的人、分集冲突拍。
+- 只写戏骨：谁压谁、压的是什么、每集打哪一下、集末留什么钩。
+- 不要写成公众号长文、口播课、分镜对白或花字。
+- 不要写死古装/职场/穿越/重生/系统等演法，后面拆集时再选皮。`,
 };
 
 /** Phrase softeners applied at sync polish (rule-based). */
@@ -223,6 +262,10 @@ export const FAMILY_BAN_REPLACEMENTS: Record<
     { pattern: /内幕消息/g, replace: "公开信息" },
     { pattern: /荐股/g, replace: "讨论标的" },
   ],
+  short_video: [
+    { pattern: /本系列将讲述/g, replace: "" },
+    { pattern: /赋能/g, replace: "帮到" },
+  ],
 };
 
 /** Soft title length caps used by polishForPlatform. */
@@ -232,7 +275,9 @@ export const PLATFORM_TITLE_MAX: Partial<Record<PlatformId, number>> = {
   bilibili: 40,
   weixin: 64,
   xiaohongshu: 20,
-  douyin: 20,
+  shunqi: 80,
+  shunqi_product: 80,
+  bafang: 32,
   baijiahao: 64,
   jianshu: 80,
   csdn: 100,
@@ -263,5 +308,7 @@ export const PLATFORM_TITLE_MAX: Partial<Record<PlatformId, number>> = {
 };
 
 export function familyLabel(family: PlatformFamily): string {
-  return PLATFORM_FAMILIES.find((f) => f.id === family)?.label ?? family;
+  return (
+    WRITING_PLATFORM_FAMILIES.find((f) => f.id === family)?.label ?? family
+  );
 }

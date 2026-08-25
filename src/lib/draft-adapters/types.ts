@@ -12,6 +12,8 @@ export type DraftPublishResult = {
   postUrl?: string;
   postId?: string;
   error?: string;
+  /** Live on destination (not a draft box). */
+  live?: boolean;
 };
 
 export type DraftAdapterArticle = {
@@ -19,6 +21,8 @@ export type DraftAdapterArticle = {
   html?: string;
   markdown?: string;
   coverPath?: string | null;
+  summary?: string;
+  sourceId?: string;
 };
 
 export interface DraftAdapter {
@@ -29,11 +33,14 @@ export interface DraftAdapter {
 
 export function contentToDraftArticle(
   content: PublishContent,
+  extras?: { sourceId?: string },
 ): DraftAdapterArticle {
   return {
     title: content.title,
     html: content.bodyHtml,
     markdown: content.bodyMarkdown,
     coverPath: content.coverPath,
+    summary: content.summary,
+    sourceId: extras?.sourceId,
   };
 }

@@ -4,8 +4,16 @@ import { useState } from "react";
 import Link from "next/link";
 import type { VideoCharacterAngle, VideoCharacterPhoto } from "@/lib/types";
 import { VoicePreviewButton } from "@/components/VoicePreviewButton";
+import { SearchSelect } from "@/components/SearchSelect";
 import { VoiceSelect, type VoiceSelectOption } from "@/components/VoiceSelect";
-import { DEFAULT_CHARACTER_VOICE, resolveVoiceId } from "@/lib/ai/tts-voice-ids";
+import { characterHasLook } from "@/lib/ai/character-look";
+import { rewritePublicMediaUrl } from "@/lib/content/media-urls";
+import {
+  DEFAULT_CHARACTER_VOICE,
+  matchCastBySpeaker,
+  resolveVoiceId,
+} from "@/lib/ai/tts-voice-ids";
+import { MAX_SERIES_CAST } from "@/lib/ai/video-script-styles";
 
 export type CastCharacter = {
   id: string;
@@ -29,13 +37,24 @@ type Props = {
   voices?: VoiceSelectOption[];
   disabled?: boolean;
   hasScript?: boolean;
+  imageModelId?: string;
   onCastChange: (ids: string[]) => void | Promise<void>;
   onVoiceChange?: (id: string, voiceId: string) => void | Promise<void>;
-  onLibraryRefresh?: () => Promise<void> | void;
+  onLibraryRefresh?: (data?: {
+    characters?: CastCharacter[];
+    cast?: CastCharacter[];
+  }) => Promise<void> | void;
 };
 
 function previewOf(person: CastCharacter): VideoCharacterAngle[] {
   return person.angles && person.angles.length > 0 ? person.angles : [];
+}
+
+function mediaSrc(url: string, stamp?: string | number) {
+  const src = rewritePublicMediaUrl(url);
+  if (!src || stamp == null || stamp === "") return src;
+  const join = src.includes("?") ? "&" : "?";
+  return `${src}${join}v=${encodeURIComponent(String(stamp))}`;
 }
 
 export function VideoCharacterPanel({
@@ -45,6 +64,7 @@ export function VideoCharacterPanel({
   voices,
   disabled,
   hasScript,
+  imageModelId,
   onCastChange,
   onVoiceChange,
   onLibraryRefresh,
@@ -52,6 +72,8 @@ export function VideoCharacterPanel({
   const [briefs, setBriefs] = useState<ScriptBrief[]>([]);
   const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
   const [generatingName, setGeneratingName] = useState("");
+  const [generatingId, setGeneratingId] = useState("");
+  const [lookRev, setLookRev] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -77,21 +99,29 @@ export function VideoCharacterPanel({
       if (!res.ok) throw new Error(data.error || "识别失败");
       setBriefs(data.briefs || []);
       setAdding(true);
+      await onLibraryRefresh?.();
       setStatus(
         data.briefs?.length
           ? `剧本里有 ${data.briefs.length} 个角色，可以选用已有的，或按设定生成。`
-          : "没从剧本里看出角色",
+          : cast.length
+            ? "本剧角色都在，没有认出新人"
+            : "没从剧本里看出角色",
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "识别失败");
+      const message = err instanceof Error ? err.message : "识别失败";
+      if (cast.length && /没从剧本里看出角色/.test(message)) {
+        setStatus("本剧角色都在，识别没有认出新人");
+      } else {
+        setError(message);
+      }
     } finally {
       setBusy(null);
     }
   }
 
   async function generateFromBrief(brief: ScriptBrief) {
-    if (castIds.length >= 4) {
-      setError("一本剧最多 4 个角色");
+    if (castIds.length >= MAX_SERIES_CAST) {
+      setError("本剧角色名单已满，先撤一个再加");
       return;
     }
     setBusy("generate");
@@ -106,19 +136,70 @@ export function VideoCharacterPanel({
           action: "generate",
           name: brief.name,
           look: brief.look,
+          imageModel: imageModelId,
         }),
       });
-      const data = (await res.json()) as { error?: string; id?: string };
+      const data = (await res.json()) as {
+        error?: string;
+        id?: string;
+        reused?: boolean;
+        characters?: CastCharacter[];
+        cast?: CastCharacter[];
+      };
       if (!res.ok) throw new Error(data.error || "生成失败");
       if (data.id && !castIds.includes(data.id)) {
-        await onCastChange([...castIds, data.id].slice(0, 4));
+        await onCastChange([...castIds, data.id]);
       }
-      await onLibraryRefresh?.();
-      setStatus(`「${brief.name}」已进角色库，并加到本剧。`);
+      await onLibraryRefresh?.(data);
+      setStatus(
+        data.reused
+          ? `「${brief.name}」已有角色图，已挂到本剧，没有再生成。`
+          : `「${brief.name}」已进角色库，并加到本剧。`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成失败");
     } finally {
       setBusy(null);
+      setGeneratingName("");
+    }
+  }
+
+  async function regenerateLook(person: CastCharacter, look?: string) {
+    setBusy("generate");
+    setGeneratingId(person.id);
+    setGeneratingName(person.name);
+    setError(null);
+    setStatus(`正在重出「${person.name}」的正面、侧前、侧面、背面…`);
+    try {
+      const res = await fetch(`/api/articles/${articleId}/video-character`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "regenerate",
+          force: true,
+          characterId: person.id,
+          name: person.name,
+          look: look || "",
+          imageModel: imageModelId,
+        }),
+      });
+      const data = (await res.json()) as {
+        error?: string;
+        characters?: CastCharacter[];
+        cast?: CastCharacter[];
+      };
+      if (!res.ok) throw new Error(data.error || "重出失败");
+      await onLibraryRefresh?.({
+        characters: data.characters,
+        cast: data.cast,
+      });
+      setLookRev((cur) => ({ ...cur, [person.id]: Date.now() }));
+      setStatus(`「${person.name}」的角色图已重出。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重出失败");
+    } finally {
+      setBusy(null);
+      setGeneratingId("");
       setGeneratingName("");
     }
   }
@@ -142,7 +223,7 @@ export function VideoCharacterPanel({
   }
 
   function addFromLibrary(id: string) {
-    if (!id || castIds.includes(id) || castIds.length >= 4) return;
+    if (!id || castIds.includes(id) || castIds.length >= MAX_SERIES_CAST) return;
     onCastChange([...castIds, id]);
     setAdding(false);
   }
@@ -163,7 +244,7 @@ export function VideoCharacterPanel({
         <div>
           <h3 className="text-sm font-medium">本剧角色</h3>
           <p className="mt-0.5 text-xs text-[var(--muted)]">
-            一本剧可以挂几个人。每人既能从角色库选，也能按剧本识别后再生成外形。上面选了傅介子，下面还能再加匈奴使者。
+            人数按戏来。续写时剧本里新出现的人会自动认出来：角色库有同名就挂上，没有就按设定生成外形。人设卡锁身份，避免后集换脸。一镜最多钉 10 张参考（人+道具+尾帧），分镜超了会拆开，不要全员挤进同一张。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -171,13 +252,16 @@ export function VideoCharacterPanel({
             type="button"
             className="btn btn-ghost text-xs"
             disabled={disabled || busy !== null || !hasScript}
-            title={hasScript ? "从口播和分镜里认出有几个人" : "先写出剧本再识别"}
+            title={hasScript ? "用模型读准稿，认出场上的人" : "先写出剧本再识别"}
             onClick={() => void extract()}
           >
             {busy === "extract" ? "识别中…" : "按剧本识别角色"}
           </button>
           <Link href="/characters" className="btn btn-ghost text-xs">
             去角色库
+          </Link>
+          <Link href="/voices" className="btn btn-ghost text-xs">
+            克隆音色
           </Link>
         </div>
       </div>
@@ -186,6 +270,7 @@ export function VideoCharacterPanel({
         <div className="mt-3 space-y-3">
           {cast.map((person, index) => {
             const preview = previewOf(person);
+            const stamp = lookRev[person.id];
             return (
               <div
                 key={person.id}
@@ -194,7 +279,7 @@ export function VideoCharacterPanel({
                 <div className="flex flex-wrap items-center gap-2">
                   {person.thumb ? (
                     <img
-                      src={person.thumb}
+                      src={mediaSrc(person.thumb, stamp)}
                       alt=""
                       className="h-10 w-10 rounded-md object-cover ring-1 ring-[var(--line)]"
                     />
@@ -265,22 +350,35 @@ export function VideoCharacterPanel({
                       />
                     </span>
                   ) : null}
-                  <select
-                    className="field max-w-[9rem] py-1 text-xs"
+                  <SearchSelect
+                    className="max-w-[9rem] text-xs"
                     value={person.id}
+                    items={library.map((c) => ({
+                      id: c.id,
+                      label: c.name || "未命名角色",
+                      disabled: c.id !== person.id && castIds.includes(c.id),
+                    }))}
                     disabled={disabled || busy !== null}
-                    onChange={(e) => replaceAt(index, e.target.value)}
+                    searchPlaceholder="搜角色"
+                    onChange={(next) => replaceAt(index, next)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost text-xs"
+                    disabled={disabled || busy !== null}
+                    title={
+                      preview.length > 0
+                        ? "按设定重出正面、侧前、侧面、背面"
+                        : "按设定出正面、侧前、侧面、背面"
+                    }
+                    onClick={() => void regenerateLook(person)}
                   >
-                    {library.map((c) => (
-                      <option
-                        key={c.id}
-                        value={c.id}
-                        disabled={c.id !== person.id && castIds.includes(c.id)}
-                      >
-                        {c.name || "未命名角色"}
-                      </option>
-                    ))}
-                  </select>
+                    {busy === "generate" && generatingId === person.id
+                      ? "重出中…"
+                      : preview.length > 0
+                        ? "重出角色图"
+                        : "出角色图"}
+                  </button>
                   <button
                     type="button"
                     className="btn btn-ghost text-xs"
@@ -295,9 +393,9 @@ export function VideoCharacterPanel({
                 {preview.length > 0 ? (
                   <div className="mt-2 grid grid-cols-4 gap-1.5">
                     {preview.slice(0, 4).map((angle) => (
-                      <figure key={angle.id} className="space-y-0.5">
+                      <figure key={`${angle.id}-${stamp || angle.url}`} className="space-y-0.5">
                         <img
-                          src={angle.url}
+                          src={mediaSrc(angle.url, stamp)}
                           alt={angle.label}
                           className="aspect-[3/4] w-full rounded object-cover ring-1 ring-[var(--line)]"
                         />
@@ -322,8 +420,9 @@ export function VideoCharacterPanel({
         <div className="mt-3 space-y-2">
           <p className="text-xs text-[var(--muted)]">剧本里的人</p>
           {briefs.map((brief) => {
-            const sameName = library.find((c) => c.name === brief.name);
+            const sameName = matchCastBySpeaker(brief.name, library);
             const already = sameName ? castIds.includes(sameName.id) : false;
+            const hasLook = characterHasLook(sameName);
             return (
               <div
                 key={`${brief.name}-${brief.role || ""}`}
@@ -345,7 +444,34 @@ export function VideoCharacterPanel({
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {already ? (
-                      <span className="text-xs text-[var(--muted)]">已选用</span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs text-[var(--muted)]">
+                          {hasLook ? "已有角色图" : "已选用"}
+                        </span>
+                        {sameName ? (
+                          <button
+                            type="button"
+                            className="btn btn-ghost text-xs"
+                            disabled={disabled || busy !== null}
+                            onClick={() =>
+                              void regenerateLook(sameName, brief.look)
+                            }
+                          >
+                            {busy === "generate" && generatingId === sameName.id
+                              ? "重出中…"
+                              : "重出角色图"}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : hasLook && sameName ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost text-xs"
+                        disabled={disabled || busy !== null}
+                        onClick={() => addFromLibrary(sameName.id)}
+                      >
+                        选用已有外形
+                      </button>
                     ) : (
                       <>
                         {sameName && (
@@ -362,7 +488,7 @@ export function VideoCharacterPanel({
                           type="button"
                           className="btn btn-ghost text-xs"
                           disabled={
-                            disabled || busy !== null || castIds.length >= 4
+                            disabled || busy !== null || castIds.length >= MAX_SERIES_CAST
                           }
                           onClick={() => void generateFromBrief(brief)}
                         >
@@ -380,22 +506,21 @@ export function VideoCharacterPanel({
         </div>
       )}
 
-      {castIds.length < 4 && (
+      {castIds.length < MAX_SERIES_CAST && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {adding || unused.length > 0 ? (
-            <select
-              className="field max-w-[12rem] py-1 text-xs"
+            <SearchSelect
+              className="max-w-[12rem] text-xs"
               value=""
+              items={unused.map((c) => ({
+                id: c.id,
+                label: c.name || "未命名角色",
+              }))}
               disabled={disabled || busy !== null}
-              onChange={(e) => addFromLibrary(e.target.value)}
-            >
-              <option value="">从角色库添加…</option>
-              {unused.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || "未命名角色"}
-                </option>
-              ))}
-            </select>
+              placeholder="从角色库添加…"
+              searchPlaceholder="搜角色"
+              onChange={(next) => addFromLibrary(next)}
+            />
           ) : null}
           {!adding && (
             <button

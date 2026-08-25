@@ -11,16 +11,17 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "agent": "tsx src/agent/cli.ts",
     "browsers": "playwright install chromium",
     "postinstall": "npm run browsers",
     "typecheck": "tsc --noEmit",
-    "geo:build": "npm run build --prefix tools/dianwu-geo-cli",
-    "geo:serve": "npm run start --prefix tools/dianwu-geo-cli",
-    "geo:mcp": "npm run dianwu-geo --prefix tools/dianwu-geo-cli -- mcp",
-    "geo:sync": "npm run dianwu-geo --prefix tools/dianwu-geo-cli -- sync",
-    "geo:platforms": "npm run dianwu-geo --prefix tools/dianwu-geo-cli -- platforms"
+    "pack:extension": "tsx scripts/pack-extension.ts",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "bash scripts/deploy-cloudflare.sh",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.20.2",
     "@tiptap/extension-highlight": "^3.29.2",
     "@tiptap/extension-image": "^3.29.2",
     "@tiptap/extension-link": "^3.29.2",
@@ -39,7 +40,9 @@
     "next": "16.2.12",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "turndown": "^7.2.4"
+    "sql.js": "^1.14.2",
+    "turndown": "^7.2.4",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -48,10 +51,13 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/turndown": "^5.0.6",
+    "@types/ws": "^8.18.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
     "playwright": "^1.62.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.23.12",
+    "typescript": "^5",
+    "wrangler": "^4.95.0"
   }
 }

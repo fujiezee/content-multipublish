@@ -1,3 +1,6 @@
+import {
+  processAndAssertImages,
+} from "./_images.js";
 /**
  * 思否 (SegmentFault) — 点物GEO 扩展额外平台适配器示例
  *
@@ -139,12 +142,13 @@ export function createSegmentfaultAdapter(BaseAdapter) {
         this.sessionToken = await this.getSessionToken();
 
         let content = article.markdown || article.html || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: ["segmentfault.com", "image-static.segmentfault.com"],
+          {skipPatterns: ["segmentfault.com", "image-static.segmentfault.com"],
             onProgress: options?.onImageProgress,
+            platformName: "SegmentFault",
           },
         );
 

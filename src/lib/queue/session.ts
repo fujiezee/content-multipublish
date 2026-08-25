@@ -128,7 +128,7 @@ export async function connectPlatform(platform: PlatformId) {
       }
 
       // 抖音创作者：未登录也会有 passport_csrf_token / odin_tt / ttwid
-      // 必须等到真正的 sessionid，且登录二维码消失；先回创作者首页再进图文页
+      // 必须等到真正的 sessionid，且登录二维码消失；先回创作者首页再进文章页
       if (platform === "douyin") {
         const cookies = await readDouyinCookies(p);
         if (!cookiesHaveDouyinSession(cookies)) return false;
@@ -149,7 +149,7 @@ export async function connectPlatform(platform: PlatformId) {
           await p.waitForTimeout(2000);
         }
         if (
-          !/creator-micro\/content\/post\/image|content\/post\/image/i.test(
+          !/creator-micro\/content\/(upload|post\/image|post\/article)|content\/post\/(image|article)|media_type=article/i.test(
             p.url(),
           )
         ) {

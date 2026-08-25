@@ -9,6 +9,9 @@
  * 私有适配器源码未公开；现网若改版需对照 Network 微调 SAVE_CANDIDATES。
  */
 import { getCookieValue } from "./_cookie.js";
+import {
+  processAndAssertImages,
+} from "./_images.js";
 
 /**
  * @param {new (...args: unknown[]) => import('../types').PlatformAdapterLike} BaseAdapter
@@ -288,11 +291,11 @@ export function createSmzdmAdapter(BaseAdapter) {
         if (!title) throw new Error("标题不能为空");
 
         let content = article.html || article.markdown || "";
-        content = await this.processImages(
+        content = await processAndAssertImages(
+          this,
           content,
           (src) => this.uploadImageByUrl(src),
-          {
-            skipPatterns: [
+          {skipPatterns: [
               "smzdm.com",
               "zdmimg.com",
               "qny.smzdm.com",
@@ -300,6 +303,7 @@ export function createSmzdmAdapter(BaseAdapter) {
               "a.zdmimg.com",
             ],
             onProgress: options?.onImageProgress,
+            platformName: "什么值得买",
           },
         );
 

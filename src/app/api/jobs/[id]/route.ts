@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { getJob, updateJob } from "@/lib/db";
+import { requireApiUser } from "@/lib/auth/api";
+import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
+import { getJobInWorkspace, updateJob } from "@/lib/db";
 import { retryJob } from "@/lib/queue/publisher";
 import type { JobStatus } from "@/lib/types";
 
@@ -18,9 +20,11 @@ const ALLOWED_STATUS = new Set<JobStatus>([
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_req: Request, ctx: Ctx) {
+export async function GET(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
-  const job = getJob(id);
+  const job = getJobInWorkspace(id, auth.ctx.workspaceId);
   if (!job) {
     return NextResponse.json({ error: "任务不存在" }, { status: 404 });
   }
@@ -29,7 +33,12 @@ export async function GET(_req: Request, ctx: Ctx) {
 
 /** Retry a failed job via Playwright queue (JobsPanel). */
 export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
+  if (!getJobInWorkspace(id, auth.ctx.workspaceId)) {
+    return NextResponse.json({ error: "任务不存在" }, { status: 404 });
+  }
   const body = await req.json().catch(() => ({}));
   if (body.action !== "retry") {
     return NextResponse.json({ error: "未知操作" }, { status: 400 });
@@ -48,8 +57,10 @@ export async function PATCH(
   req: Request,
   ctx: Ctx,
 ) {
+  const auth = await requireApiUser(req);
+  if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
-  const existing = getJob(id);
+  const existing = getJobInWorkspace(id, auth.ctx.workspaceId);
   if (!existing) {
     return NextResponse.json({ error: "任务不存在" }, { status: 404 });
   }
@@ -59,6 +70,7 @@ export async function PATCH(
     status?: JobStatus;
     result_url?: string | null;
     error?: string | null;
+    screenshot_path?: string | null;
   } = {};
 
   if (body.status != null) {
@@ -79,11 +91,18 @@ export async function PATCH(
         ? null
         : String(body.error);
   }
+  if ("screenshot_path" in body) {
+    patch.screenshot_path =
+      body.screenshot_path === null || body.screenshot_path === undefined
+        ? null
+        : String(body.screenshot_path);
+  }
 
   if (!Object.keys(patch).length) {
     return NextResponse.json({ error: "无更新字段" }, { status: 400 });
   }
 
   const job = updateJob(id, patch);
+  await persistCloudflareDb();
   return NextResponse.json({ job });
 }

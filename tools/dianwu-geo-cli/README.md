@@ -1,6 +1,6 @@
 # @dianwu/geo-cli
 
-点物GEO 命令行与 MCP：经 WebSocket（默认 `9527`）桥接 Chrome 扩展，用浏览器登录态同步各平台**草稿**。
+**已停用。** 发稿只走点物网站 → Chrome 扩展，不再提供本机 `serve` / MCP。本目录仅作归档。
 
 ## 架构
 

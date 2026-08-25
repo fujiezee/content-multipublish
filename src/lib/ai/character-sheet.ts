@@ -1,17 +1,54 @@
 import { chatCompletion } from "@/lib/ai/deepseek";
+import {
+  hookStyleLabel,
+  hookStyleLookLine,
+  normalizeHookStyle,
+} from "@/lib/ai/video-script-styles";
 import { manhuaCharacterPrompt } from "@/lib/ai/manhua-look";
+import {
+  collectDialogueCast,
+  looksLikeCharacterName,
+} from "@/lib/ai/script-import";
 import {
   generateImageWithChat,
   loadImageRef,
   type ImageInlineRef,
 } from "@/lib/ai/openai-image";
 import type { VideoCharacterAngle, VideoCharacterPhoto } from "@/lib/types";
+import {
+  characterHasLook,
+  parseAngles,
+  parsePhotos,
+} from "@/lib/ai/character-look";
+
+export { characterHasLook, parseAngles, parsePhotos };
 
 export type ScriptCharacterBrief = {
   name: string;
   look: string;
   role?: string;
+  intro?: string;
+  gender?: "男" | "女";
 };
+
+function composeCharacterLook(input: {
+  gender?: string;
+  age?: string;
+  look?: string;
+  marks?: string;
+  wardrobe?: string;
+  habit?: string;
+}): string {
+  const parts = [
+    input.gender?.trim(),
+    input.age?.trim(),
+    input.look?.replace(/\s+/g, " ").trim(),
+    input.marks?.trim() ? `标志：${input.marks.trim()}` : "",
+    input.wardrobe?.trim() ? `定装：${input.wardrobe.trim()}` : "",
+    input.habit?.trim() ? `习惯：${input.habit.trim()}` : "",
+  ].filter(Boolean);
+  return parts.join("，").replace(/，+/g, "，").slice(0, 360);
+}
 
 export const CHARACTER_ANGLES: Array<{ id: string; label: string; view: string }> =
   [
@@ -20,45 +57,6 @@ export const CHARACTER_ANGLES: Array<{ id: string; label: string; view: string }
     { id: "side", label: "侧面", view: "正侧面全身，头和身体都侧过来" },
     { id: "back", label: "背面", view: "背面全身，能看清头发、衣服后背" },
   ];
-
-export function parsePhotos(raw: string): VideoCharacterPhoto[] {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => {
-        if (typeof item === "string" && item.trim()) return { url: item.trim() };
-        if (item && typeof item === "object" && typeof (item as { url?: string }).url === "string") {
-          return { url: (item as { url: string }).url.trim() };
-        }
-        return null;
-      })
-      .filter((x): x is VideoCharacterPhoto => Boolean(x?.url));
-  } catch {
-    return [];
-  }
-}
-
-export function parseAngles(raw: string): VideoCharacterAngle[] {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => {
-        if (!item || typeof item !== "object") return null;
-        const o = item as Record<string, unknown>;
-        if (typeof o.url !== "string" || !o.url.trim()) return null;
-        return {
-          id: typeof o.id === "string" ? o.id : "angle",
-          label: typeof o.label === "string" ? o.label : "角度",
-          url: o.url.trim(),
-        };
-      })
-      .filter((x): x is VideoCharacterAngle => Boolean(x));
-  } catch {
-    return [];
-  }
-}
 
 async function refsFromPhotos(photos: VideoCharacterPhoto[]): Promise<ImageInlineRef[]> {
   const refs: ImageInlineRef[] = [];
@@ -73,17 +71,38 @@ function scriptText(
   episodes: Array<{ title: string; hook: string; voiceover: string; on_screen: string }>,
 ): string {
   return episodes
-    .slice(0, 8)
+    .slice(0, 12)
     .map(
       (ep, i) =>
-        `第${i + 1}集 ${ep.title}\n钩子：${ep.hook}\n出字：${ep.on_screen}\n口播：${ep.voiceover}`,
+        `第${i + 1}集 ${ep.title}\n钩子：${ep.hook}\n口播：${ep.voiceover}`,
     )
     .join("\n\n");
+}
+
+function hintedNames(raw?: string): string[] {
+  return String(raw || "")
+    .split(/[、,，/\s]+/)
+    .map((name) => name.trim())
+    .filter((name) => name && name !== "旁白" && looksLikeCharacterName(name));
+}
+
+function fallbackCharacterBriefs(input: {
+  nameHint?: string;
+  episodes: Array<{ title: string; hook: string; voiceover: string; on_screen: string }>;
+}): ScriptCharacterBrief[] {
+  const names = [
+    ...new Set([
+      ...hintedNames(input.nameHint),
+      ...collectDialogueCast(scriptText(input.episodes)),
+    ]),
+  ].slice(0, 8);
+  return names.map((name) => ({ name, look: "", role: "", intro: "" }));
 }
 
 export async function describeCharactersFromScript(input: {
   seriesTitle?: string;
   genre?: string;
+  hookStyle?: string;
   nameHint?: string;
   episodes: Array<{ title: string; hook: string; voiceover: string; on_screen: string }>;
 }): Promise<ScriptCharacterBrief[]> {
@@ -94,22 +113,26 @@ export async function describeCharactersFromScript(input: {
     [
       {
         role: "system",
-        content: `你是短视频角色造型师。根据剧本列出所有出镜的半写实插画角色，五官清楚像个人，不要写成实拍真人，不要明星脸，不要二次元大眼睛。
-只输出 JSON 数组，1 到 4 个人，按戏份从多到少：
-[{"name":"角色名","role":"主角或配角","look":"外貌一段话，含性别年龄身材发型五官衣服配饰气质，80-140字，按半写实插画写，不要写皮肤毛孔或照片质感"}]
-剧本里有几个人就写几个人。小学生也能看懂。不要写品牌、网址。`,
+        content: `你在读短剧剧本，找出场上的人。只认会说话、有名字的人物，不要认镜头、动作、花字、表情、道具、地名、预告。
+不要用规则去扫「某某：」。先读完整准稿，再判断谁是人。
+例如「霍北辰：放下。」是人；「又立刻摸土」「小石头一愣」「沈清禾开匣」「系统残响」「第二季预告」「西域沙洲」不是人。
+只输出 JSON 数组，1 到 8 个人，按戏份从多到少：
+[{"name":"人名","role":"剧里的身份，如边关守将、被定罪的妻子，不要写主角配角拿主意的人","intro":"40-90字真实介绍：是谁、和谁什么关系、这出戏要干什么，必须从准稿读出来，禁止压/被压/插一句模板","gender":"男或女","age":"大约几岁","look":"身高体型发型发色五官气质，40-80字","marks":"疤痕眼镜纹身随身物，没有就空","wardrobe":"这一场定装：日常或公务/战斗各写清颜色和款式","habit":"常见动作或说话样子，能画出来"}]
+name 只写人名，不要加人名后面的动作。gender 必须写准。不要明星脸，不要品牌、网址。`,
       },
       {
         role: "user",
         content: `系列：${input.seriesTitle || "短视频"}
-形态：${input.genre === "drama" ? "剧情短剧" : "科普口播"}
+形态：${hookStyleLabel(input.hookStyle || (input.genre === "drama" ? "drama" : "talk"))}
+造型：${hookStyleLookLine(input.hookStyle || (input.genre === "drama" ? "drama" : "talk"))}
+${input.hookStyle ? `题材：${hookStyleLabel(normalizeHookStyle(input.hookStyle))}。` : ""}
 ${input.nameHint ? `已经选定的人：${input.nameHint}` : ""}
 
 剧本：
 ${scriptText(input.episodes).slice(0, 6000)}`,
       },
     ],
-    { temperature: 0.4, maxTokens: 1600, timeoutMs: 60_000 },
+    { temperature: 0.4, maxTokens: 2200, timeoutMs: 60_000 },
   );
   const start = raw.indexOf("[");
   const end = raw.lastIndexOf("]");
@@ -118,16 +141,33 @@ ${scriptText(input.episodes).slice(0, 6000)}`,
     try {
       const json = JSON.parse(raw.slice(start, end + 1)) as unknown;
       if (Array.isArray(json)) {
-        for (const item of json.slice(0, 4)) {
+        for (const item of json.slice(0, 8)) {
           if (!item || typeof item !== "object") continue;
           const o = item as Record<string, unknown>;
           const name = typeof o.name === "string" ? o.name.trim().slice(0, 16) : "";
-          const look =
-            typeof o.look === "string"
-              ? o.look.replace(/\s+/g, " ").trim().slice(0, 180)
-              : "";
-          const role = typeof o.role === "string" ? o.role.trim().slice(0, 8) : "";
-          if (name || look) briefs.push({ name: name || "角色", look, role });
+          const role = typeof o.role === "string"
+            ? o.role.replace(/拿主意的人|被压的人|在场的人|主角或配角/g, "").trim().slice(0, 24)
+            : "";
+          const intro = typeof o.intro === "string"
+            ? o.intro.replace(/\s+/g, " ").trim().slice(0, 180)
+            : "";
+          const genderRaw = typeof o.gender === "string" ? o.gender.trim() : "";
+          const gender = /女/.test(genderRaw)
+            ? "女"
+            : /男/.test(genderRaw)
+              ? "男"
+              : undefined;
+          const look = composeCharacterLook({
+            gender,
+            age: typeof o.age === "string" ? o.age : "",
+            look: typeof o.look === "string" ? o.look : "",
+            marks: typeof o.marks === "string" ? o.marks : "",
+            wardrobe: typeof o.wardrobe === "string" ? o.wardrobe : "",
+            habit: typeof o.habit === "string" ? o.habit : "",
+          });
+          if (name && name !== "旁白") {
+            briefs.push({ name, look, role, intro, gender });
+          }
         }
       }
     } catch {
@@ -135,13 +175,12 @@ ${scriptText(input.episodes).slice(0, 6000)}`,
     }
   }
   if (briefs.length === 0) {
+    briefs.push(...fallbackCharacterBriefs(input));
+  }
+  if (briefs.length === 0) {
     throw new Error("没从剧本里看出角色，请先把口播写具体一点");
   }
-  const withLook = briefs.filter((b) => b.look);
-  if (withLook.length === 0) {
-    throw new Error("没从剧本里看出角色长什么样，请先把口播写具体一点");
-  }
-  return withLook;
+  return briefs;
 }
 
 export async function describeCharacterFromScript(input: {
@@ -165,6 +204,8 @@ export async function generateCharacterAngles(input: {
   name?: string;
   look?: string;
   photos?: VideoCharacterPhoto[];
+  imageModel?: string;
+  lookStyle?: string | null;
   onProgress?: (message: string) => void;
 }): Promise<VideoCharacterAngle[]> {
   const photos = input.photos || [];
@@ -187,10 +228,17 @@ export async function generateCharacterAngles(input: {
           : "from-text";
     const refs = lockRefs.length ? lockRefs : photoRefs;
     const { url } = await generateImageWithChat(
-      manhuaCharacterPrompt({ who, look, view: angle.view, phase }),
+      manhuaCharacterPrompt({
+        who,
+        look,
+        view: angle.view,
+        phase,
+        lookStyle: input.lookStyle,
+      }),
       {
         aspectRatio: "3:4",
         references: refs.length ? refs : undefined,
+        model: input.imageModel,
       },
     );
     out.push({ id: angle.id, label: angle.label, url });

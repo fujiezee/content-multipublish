@@ -1,8 +1,14 @@
 import fs from "fs";
 import path from "path";
-import { UPLOADS_DIR } from "@/lib/paths";
+import { randomUUID } from "crypto";
+import {
+  resolvePublicOrigin,
+  rewritePublicMediaUrl,
+  toAbsoluteMediaUrl,
+} from "@/lib/content/media-urls";
+import { isCloudflareRuntime, UPLOADS_DIR, ensureDataDirs } from "@/lib/paths";
 
-/** Upload local bytes to a public CDN (Vigma R2 via api.vigma.app/upload). */
+/** Upload local bytes to the Dianwu CDN (cdn.dianwu.ai/upload → R2). */
 export function publicMediaConfigured(): boolean {
   return Boolean(
     process.env.PUBLIC_MEDIA_UPLOAD_URL?.trim() &&
@@ -13,14 +19,19 @@ export function publicMediaConfigured(): boolean {
 export function publicMediaBaseUrl(): string {
   return (
     process.env.PUBLIC_MEDIA_BASE_URL?.trim().replace(/\/$/, "") ||
-    "https://api.vigma.app/files"
+    "https://cdn.dianwu.ai/files"
   );
+}
+
+/** Prefer cdn.dianwu.ai even if the upload API still returns files.vigma.app. */
+function toPublicCdnUrl(url: string): string {
+  return rewritePublicMediaUrl(url);
 }
 
 function uploadEndpoint(): string {
   return (
     process.env.PUBLIC_MEDIA_UPLOAD_URL?.trim() ||
-    "https://api.vigma.app/upload"
+    "https://cdn.dianwu.ai/upload"
   );
 }
 
@@ -72,7 +83,35 @@ export async function uploadPublicMedia(input: {
     return null;
   }
   const url = data.url || data.download_url;
-  return url?.trim() || null;
+  return url?.trim() ? toPublicCdnUrl(url.trim()) : null;
+}
+
+/** CDN first. On Cloudflare there is no durable local disk. */
+export async function persistPublicAsset(input: {
+  bytes: Buffer | Uint8Array;
+  filename: string;
+  contentType?: string;
+  label?: string;
+}): Promise<string> {
+  const filename = path
+    .basename(input.filename)
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  const publicUrl = await uploadPublicMedia({
+    bytes: input.bytes,
+    filename,
+    contentType: input.contentType,
+  });
+  if (publicUrl) return publicUrl;
+  if (isCloudflareRuntime()) {
+    throw new Error(
+      `${input.label || "文件"}已生成，但图床上传失败。请检查 PUBLIC_MEDIA_TOKEN`,
+    );
+  }
+  ensureDataDirs();
+  const buf =
+    input.bytes instanceof Buffer ? input.bytes : Buffer.from(input.bytes);
+  fs.writeFileSync(path.join(UPLOADS_DIR, filename), buf);
+  return `/api/uploads/${filename}`;
 }
 
 /** Map /api/uploads/name → local file path if it exists. */
@@ -98,12 +137,94 @@ function mimeForName(name: string): string {
   return "application/octet-stream";
 }
 
+function isLocalUploadUrl(src: string): boolean {
+  const s = src.trim();
+  return (
+    /\/api\/uploads\//i.test(s) ||
+    /\/data\/uploads\//i.test(s) ||
+    /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/api\/uploads\//i.test(s)
+  );
+}
+
+function isPublicCdnUrl(src: string): boolean {
+  const s = src.trim();
+  return /^https?:\/\//i.test(s) && !isLocalUploadUrl(s);
+}
+
+async function loadBytesForPublish(
+  src: string,
+  origin?: string,
+): Promise<{ bytes: Buffer; filename: string; contentType: string } | null> {
+  const trimmed = src.trim();
+  if (!trimmed || isPublicCdnUrl(trimmed)) return null;
+
+  const file = localUploadPathFromUrl(trimmed);
+  if (file) {
+    const name = path.basename(file);
+    return {
+      bytes: fs.readFileSync(file),
+      filename: name,
+      contentType: mimeForName(name),
+    };
+  }
+
+  const fetchUrl = toAbsoluteMediaUrl(trimmed, resolvePublicOrigin(origin));
+  try {
+    const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 32) return null;
+    let name = path.basename(new URL(fetchUrl).pathname);
+    if (!name || name === "/") {
+      name = `remote-${randomUUID()}.jpg`;
+    }
+    const contentType = (
+      res.headers.get("content-type") || mimeForName(name)
+    ).split(";")[0];
+    return { bytes: buf, filename: name, contentType };
+  } catch {
+    return null;
+  }
+}
+
+async function publishOneLocalUrl(
+  src: string,
+  origin?: string,
+): Promise<string | null> {
+  if (isPublicCdnUrl(src)) return src;
+  const loaded = await loadBytesForPublish(src, origin);
+  if (!loaded) return null;
+  return uploadPublicMedia({
+    bytes: loaded.bytes,
+    filename: loaded.filename,
+    contentType: loaded.contentType,
+  });
+}
+
+/** Upload a local cover filename or /api/uploads path to public CDN. */
+export async function publishLocalCoverPath(
+  coverPath: string | null | undefined,
+  origin?: string,
+): Promise<string | null> {
+  if (!coverPath?.trim()) return null;
+  const raw = coverPath.trim();
+  if (isPublicCdnUrl(raw)) return raw;
+  if (!publicMediaConfigured()) return null;
+  const src = raw.includes("/api/uploads/")
+    ? raw
+    : raw.includes("/data/uploads/")
+      ? raw.replace(/^\/?data\/uploads\//, "/api/uploads/")
+      : `/api/uploads/${path.basename(raw)}`;
+  return publishOneLocalUrl(src, origin);
+}
+
 /**
  * Rewrite local /api/uploads (and localhost absolute forms) to public CDN URLs.
  * Uploads each unique local file once; leaves untouched if CDN not configured.
  */
 export async function publishLocalMediaInHtml(
   html: string,
+  origin?: string,
 ): Promise<string> {
   if (!html || !publicMediaConfigured()) return html;
 
@@ -112,26 +233,13 @@ export async function publishLocalMediaInHtml(
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const src = m[2].trim();
-    if (
-      src.includes("/api/uploads/") ||
-      /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/api\/uploads\//i.test(src)
-    ) {
-      urls.add(src);
-    }
+    if (isLocalUploadUrl(src)) urls.add(src);
   }
   if (!urls.size) return html;
 
   const map = new Map<string, string>();
   for (const src of urls) {
-    const file = localUploadPathFromUrl(src);
-    if (!file) continue;
-    const name = path.basename(file);
-    const bytes = fs.readFileSync(file);
-    const publicUrl = await uploadPublicMedia({
-      bytes,
-      filename: name,
-      contentType: mimeForName(name),
-    });
+    const publicUrl = await publishOneLocalUrl(src, origin);
     if (publicUrl) map.set(src, publicUrl);
   }
   if (!map.size) return html;
@@ -148,10 +256,7 @@ export async function publishLocalMediaInHtml(
 /** True when HTML/markdown still points at non-public local uploads. */
 export function hasNonPublicMedia(content: string): boolean {
   if (!content) return false;
-  return (
-    /\/api\/uploads\//i.test(content) ||
-    /https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/api\/uploads\//i.test(content)
-  );
+  return isLocalUploadUrl(content);
 }
 
 /**
@@ -162,7 +267,7 @@ export function assertPublicMediaOrThrow(content: string, label = "正文"): voi
   if (!hasNonPublicMedia(content)) return;
   if (!publicMediaConfigured()) {
     throw new Error(
-      `${label}含本机图片地址。请配置 PUBLIC_MEDIA_UPLOAD_URL / PUBLIC_MEDIA_TOKEN（Vigma R2），否则知乎/小红书等平台无法拉图`,
+      `${label}含本机图片地址。请配置 PUBLIC_MEDIA_UPLOAD_URL / PUBLIC_MEDIA_TOKEN（cdn.dianwu.ai），否则知乎/小红书等平台无法拉图`,
     );
   }
   throw new Error(
@@ -172,6 +277,7 @@ export function assertPublicMediaOrThrow(content: string, label = "正文"): voi
 
 export async function publishLocalMediaInMarkdown(
   markdown: string,
+  origin?: string,
 ): Promise<string> {
   if (!markdown || !publicMediaConfigured()) return markdown;
   const urls = new Set<string>();
@@ -179,19 +285,12 @@ export async function publishLocalMediaInMarkdown(
   let m: RegExpExecArray | null;
   while ((m = re.exec(markdown)) !== null) {
     const src = m[2].trim();
-    if (src.includes("/api/uploads/")) urls.add(src);
+    if (isLocalUploadUrl(src)) urls.add(src);
   }
   if (!urls.size) return markdown;
   const map = new Map<string, string>();
   for (const src of urls) {
-    const file = localUploadPathFromUrl(src);
-    if (!file) continue;
-    const name = path.basename(file);
-    const publicUrl = await uploadPublicMedia({
-      bytes: fs.readFileSync(file),
-      filename: name,
-      contentType: mimeForName(name),
-    });
+    const publicUrl = await publishOneLocalUrl(src, origin);
     if (publicUrl) map.set(src, publicUrl);
   }
   if (!map.size) return markdown;

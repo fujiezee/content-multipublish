@@ -11,6 +11,7 @@ export type WorkspaceUser = {
   password_hash: string;
   display_name: string;
   created_at: string;
+  email_verified_at?: string | null;
 };
 
 export type ExtensionToken = {
@@ -37,4 +38,6 @@ export type AuthContext = {
   workspaceId: string;
   email: string;
   displayName: string;
+  /** Present when the request used a paired local-agent token. */
+  agentDeviceId?: string;
 };

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveAuth } from "@/lib/auth/session";
 import { getExtensionToken, touchExtensionToken } from "@/lib/db";
+import { LATEST_EXTENSION_VERSION } from "@/lib/extension-release";
 
 export const runtime = "nodejs";
 
@@ -42,6 +43,7 @@ export async function POST(req: Request) {
     bound,
     workspaceId,
     extensionVersion: extensionVersion || null,
+    latestExtensionVersion: LATEST_EXTENSION_VERSION,
     publishModes: {
       draft: "draft_ok",
       fillConfirm: "filled_awaiting_publish",
