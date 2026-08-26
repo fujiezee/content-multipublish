@@ -4,6 +4,7 @@ import {
   scriptLlmFallbackId,
   streamScriptLlm,
 } from "@/lib/ai/script-llm";
+import { polishEpisodeScripts } from "@/lib/ai/human-talk-agent";
 import {
   buildCorpusContext,
   looksLikeManualScriptTitle,
@@ -1174,6 +1175,35 @@ function normalizeEpisode(
   };
 }
 
+function unwrapEpisodeItem(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as Record<string, unknown>;
+  const nested = o.episode ?? o.script ?? o.data;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested;
+  return raw;
+}
+
+function episodeListFromSeriesJson(o: Record<string, unknown>): unknown[] {
+  const direct =
+    o.episodes ??
+    o.episode_list ??
+    o.episodeList ??
+    o.eps ??
+    o.scripts ??
+    o.items;
+  if (Array.isArray(direct)) return direct.map(unwrapEpisodeItem);
+  if (direct && typeof direct === "object") return [unwrapEpisodeItem(direct)];
+  const looksLikeEpisode = Boolean(
+    o.voiceover ||
+      o.vo ||
+      o.episode_no ||
+      o.episodeNo ||
+      Array.isArray(o.shots),
+  );
+  if (looksLikeEpisode) return [o];
+  return [];
+}
+
 export function parseSeries(
   raw: string,
   genre: VideoScriptGenre,
@@ -1185,13 +1215,18 @@ export function parseSeries(
     throw new Error("AI 未返回系列剧本");
   }
   const o = json as Record<string, unknown>;
-  const episodesRaw = Array.isArray(o.episodes) ? o.episodes : [];
+  const episodesRaw = episodeListFromSeriesJson(o);
   const episodes = episodesRaw
     .map((item, i) => normalizeEpisode(item, i + 1, durationSec, speakMode))
     .filter((x): x is GeneratedEpisodeScript => Boolean(x))
     .sort((a, b) => a.episode_no - b.episode_no);
   if (episodes.length === 0) {
-    throw new Error("剧本里没有可用的分集，请再生成一次");
+    if (episodesRaw.length > 0) {
+      throw new Error("分集 JSON 有了，但对白是空的。请再生成一次，或把模型换成「DeepSeek 对话」");
+    }
+    throw new Error(
+      "模型只写了剧名、没写出分集。思考太长时会占满额度。请再生成一次，或把模型换成「DeepSeek 对话」",
+    );
   }
   return {
     genre,
@@ -1771,6 +1806,7 @@ ${input.corpusText}`,
         timeoutMs: durationSec <= 15 ? 90_000 : 180_000,
         thinkingEffort: durationSec <= 15 ? "low" : "high",
         onEvent,
+        announceThink: false,
       },
     );
     } catch (err) {
@@ -1838,14 +1874,15 @@ async function finalizeGeneratedEpisodes(
         },
         onEvent,
       );
+  const talked = await polishEpisodeScripts(reviewed, onEvent);
   if (
     short &&
-    reviewed.every((ep) => firstPassShotsOk(ep, input.durationSec))
+    talked.every((ep) => firstPassShotsOk(ep, input.durationSec))
   ) {
-    return reviewed.map(scrubShowCopy);
+    return talked.map(scrubShowCopy);
   }
   const directed = await directGeneratedEpisodes(
-    reviewed,
+    talked,
     {
       hookStyle: input.hookStyle,
       lookStyle: input.lookStyle,
@@ -1923,6 +1960,8 @@ async function streamModelText(
     timeoutMs: number;
     thinkingEffort?: "low" | "high" | "max";
     onEvent?: (event: VideoScriptGenEvent) => void | Promise<void>;
+    /** 补集/重写时不要把进度打回「想钩子和节奏」 */
+    announceThink?: boolean;
   },
 ): Promise<string> {
   const model = scriptModel();
@@ -1930,6 +1969,7 @@ async function streamModelText(
   let content = "";
   let thinking = "";
   let lastStatusAt = 0;
+  const announceThink = options.announceThink !== false;
   for await (const chunk of streamScriptLlm(messages, {
     model,
     temperature: 0.55,
@@ -1939,7 +1979,9 @@ async function streamModelText(
   })) {
     if (chunk.type === "thinking") {
       thinking += chunk.text;
+      if (content) continue;
       await options.onEvent?.({ type: "thinking", delta: chunk.text });
+      if (!announceThink) continue;
       if (!lastStatusAt) {
         lastStatusAt = Date.now();
         await options.onEvent?.({
@@ -2407,6 +2449,7 @@ ${
       timeoutMs: writeBudget.timeoutMs,
       thinkingEffort: writeBudget.thinkingEffort,
       onEvent,
+      announceThink: false,
     },
   );
   const parsed = parseEpisodeList(
@@ -2541,8 +2584,9 @@ export async function regenerateOneEpisode(
     onEvent,
   );
   const next = reviewed || { ...ep, episode_no: input.episodeNo };
+  const [talked] = await polishEpisodeScripts([next], onEvent);
   return directOneEpisodeShots(
-    next,
+    talked || next,
     {
       ...rewriteInput,
       innerVoice: input.innerVoice,
@@ -2665,8 +2709,9 @@ export async function generateNextEpisode(
     onEvent,
   );
   const next = reviewed || { ...ep, episode_no: episodeNo };
+  const [talked] = await polishEpisodeScripts([next], onEvent);
   return directOneEpisodeShots(
-    next,
+    talked || next,
     {
       ...rewriteInput,
       innerVoice: input.innerVoice,

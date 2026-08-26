@@ -343,6 +343,7 @@ async function synthesizeViaOpenspeech(
   );
   const speed = opts?.speed && opts.speed > 0 ? opts.speed : TTS_SPEED;
   const tone = String(opts?.tone || "").trim();
+  const emotion = String(opts?.emotion || "").trim();
   const picked = resolveTtsSpeechModel(opts?.ttsModel);
   const expressive =
     picked === "seed-tts-2.0-expressive" ||
@@ -357,7 +358,11 @@ async function synthesizeViaOpenspeech(
   const reqParams: Record<string, unknown> = {
     text: text.slice(0, 4000),
     speaker: voice,
-    audio_params: { format: "mp3", sample_rate: 24000 },
+    audio_params: {
+      format: "mp3",
+      sample_rate: 24000,
+      ...(emotion ? { emotion, emotion_scale: 5 } : {}),
+    },
     speed_ratio: speed,
   };
   if (Object.keys(additions).length) {
@@ -405,6 +410,8 @@ type SpeechOpts = {
   acting?: boolean;
   /** 打开 2.0 表现力，不换音色、不走短剧演法 */
   expressive?: boolean;
+  /** 部分 1.0 多情感音色：happy / sad / angry / surprised */
+  emotion?: string;
   model?: string;
   ttsModel?: string;
 };
@@ -698,6 +705,7 @@ export async function synthesizeSpeechOrThrow(
     punch?: boolean;
     ttsModel?: string;
     persist?: boolean;
+    emotion?: string;
   },
 ): Promise<SpeechClip> {
   const spoken = text.replace(/\s+/g, " ").trim();
@@ -708,6 +716,7 @@ export async function synthesizeSpeechOrThrow(
     acting: opts?.acting,
     expressive: opts?.expressive,
     ttsModel: opts?.ttsModel,
+    emotion: opts?.emotion,
   });
   const buffer =
     opts?.punch === false || opts?.acting

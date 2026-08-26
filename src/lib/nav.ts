@@ -43,15 +43,7 @@ export const APP_NAV_GROUPS = [
   },
 ] as const;
 
-export const APP_NAV_ADMIN = {
-  id: "admin",
-  label: "管理",
-  items: [{ href: "/admin", label: "后台", icon: "admin" as const }],
-} as const;
-
-export type AppNavIcon =
-  | (typeof APP_NAV_GROUPS)[number]["items"][number]["icon"]
-  | (typeof APP_NAV_ADMIN)["items"][number]["icon"];
+export type AppNavIcon = (typeof APP_NAV_GROUPS)[number]["items"][number]["icon"];
 
 export const MARKETING_NAV = [
   { href: "#flow", label: "怎么用" },

@@ -124,10 +124,10 @@ function isOverdue(message: string): boolean {
 
 export function explainDoubaoError(message: string): string {
   if (isOverdue(message)) {
-    return "火山引擎账号欠费，豆包调不通。先到费用中心充值，再去查排名。https://console.volcengine.com/finance/fund";
+    return "火山引擎账号欠费，豆包调不通。先到费用中心充值。https://console.volcengine.com/finance/fund";
   }
   if (/ModelNotOpen|未开通/i.test(message)) {
-    return "这个模型还没开通。到方舟开通管理打开一个文本对话模型，或把接入点 ID（ep- 开头）填进模型栏。https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement";
+    return "这个模型还没开通。到方舟开通管理打开一个文本对话模型。https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement";
   }
   if (/InvalidEndpointOrModel|Character/i.test(message)) {
     return "模型名不对。不要填 Doubao-Seed-Character 这种角色名，用 doubao-seed-2-0-lite-260428，或控制台里的 ep- 接入点。";
@@ -244,9 +244,7 @@ export async function doubaoChatCompletion(
 ): Promise<string> {
   const config = options?.config ?? resolveDoubaoConfig();
   if (!config) {
-    throw new Error(
-      "未配置豆包。在查排名页填入火山方舟 API Key，或在 .env.local 设置 ARK_API_KEY",
-    );
+    throw new Error("未配置豆包。请设置 ARK_API_KEY");
   }
 
   const wantSearch = options?.webSearch !== false;

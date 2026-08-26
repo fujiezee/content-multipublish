@@ -30,7 +30,9 @@ import { QuotaHint, QuotaMessage } from "@/components/QuotaHint";
 import { parseQuotaError, useQuota } from "@/components/useQuota";
 import { quotaRechargeText } from "@/lib/billing/copy";
 import { stripBodyLabel } from "@/lib/ai/strip-body-label";
+import { parseCopyResponse, serializeCopyDraft } from "@/lib/ai/copy-parse";
 import { markdownToHtml } from "@/lib/content/markdown";
+import { HumanTalkRevise } from "@/components/HumanTalkRevise";
 import { ModelPicker } from "@/components/ModelPicker";
 import type { AiModelBadge } from "@/lib/ai/model-catalog/types";
 import {
@@ -108,10 +110,17 @@ export function AiWritingPanel() {
     CopywritingModelOption[]
   >([]);
   const [modelSlug, setModelSlug] = useState("");
+  const [reviewModels, setReviewModels] = useState<CopywritingModelOption[]>(
+    [],
+  );
+  const [reviewModel, setReviewModel] = useState("");
   const [thinkingText, setThinkingText] = useState("");
   const [contentText, setContentText] = useState("");
   const [showThinking, setShowThinking] = useState(true);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [streamPhaseKind, setStreamPhaseKind] = useState<"write" | "review" | null>(
+    null,
+  );
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [distillPreview, setDistillPreview] = useState<DistillPreview | null>(
     null,
@@ -161,18 +170,38 @@ export function AiWritingPanel() {
       if (!res.ok) return;
       const data = await res.json().catch(() => ({}));
       const models = (data.models as CopywritingModelOption[] | undefined) ?? [];
+      const reviews =
+        (data.reviewModels as CopywritingModelOption[] | undefined) ?? models;
       setCopywritingModels(models);
+      setReviewModels(reviews);
       try {
         const saved = localStorage.getItem("dwgeo-copywriting-model");
         if (saved && models.some((m) => m.id === saved && m.ready !== false)) {
           setModelSlug(saved);
-          return;
+        } else {
+          const ready = models.find((m) => m.ready !== false);
+          if (ready) setModelSlug(ready.id);
+        }
+        const savedReview = localStorage.getItem("dwgeo-review-model");
+        if (
+          savedReview &&
+          reviews.some((m) => m.id === savedReview && m.ready !== false)
+        ) {
+          setReviewModel(savedReview);
+        } else {
+          const readyReview =
+            reviews.find((m) => m.id === "deepseek-chat" && m.ready !== false) ||
+            reviews.find((m) => m.ready !== false);
+          if (readyReview) setReviewModel(readyReview.id);
         }
       } catch {
-        // ignore
+        const ready = models.find((m) => m.ready !== false);
+        if (ready) setModelSlug(ready.id);
+        const readyReview =
+          reviews.find((m) => m.id === "deepseek-chat" && m.ready !== false) ||
+          reviews.find((m) => m.ready !== false);
+        if (readyReview) setReviewModel(readyReview.id);
       }
-      const ready = models.find((m) => m.ready !== false);
-      if (ready) setModelSlug(ready.id);
     })();
   }, []);
 
@@ -303,6 +332,7 @@ export function AiWritingPanel() {
     setContentText("");
     setStreamModel(null);
     setStreamStatus(null);
+    setStreamPhaseKind(null);
     setShowThinking(true);
     setEditingPreview(false);
   }
@@ -581,6 +611,7 @@ export function AiWritingPanel() {
           saveAsArticle: false,
           geoKeywordId: geoKeywordId || undefined,
           modelSlug: modelSlug || undefined,
+          reviewModel: reviewModel || undefined,
           marketingAngle: kind === "marketing" ? marketingAngle : undefined,
           oralMode: kind === "oral" ? oralMode : undefined,
         }),
@@ -608,6 +639,7 @@ export function AiWritingPanel() {
       const decoder = new TextDecoder();
       let buffer = "";
       let finished = false;
+      let reviewing = false;
 
       const applyEvent = (line: string): boolean => {
         if (!line.trim()) return false;
@@ -616,6 +648,7 @@ export function AiWritingPanel() {
           delta?: string;
           replace?: boolean;
           model?: string;
+          phase?: "write" | "review";
           usedCorpus?: { id: string; title: string }[];
           result?: PreviewState & { bodyMarkdown: string };
           article?: { id: string };
@@ -629,10 +662,22 @@ export function AiWritingPanel() {
 
         if (event.type === "meta") {
           if (event.model) setStreamModel(event.model);
+          if (event.phase === "review") {
+            reviewing = true;
+            setStreamPhaseKind("review");
+            setShowThinking(true);
+            setStreamStatus("正在过人话审核…");
+          } else if (event.phase === "write") {
+            reviewing = false;
+            setStreamPhaseKind("write");
+          }
           return false;
         }
         if (event.type === "thinking" && event.delta) {
           setThinkingText((prev) => prev + event.delta);
+          if (reviewing || event.delta.includes("人话审核")) {
+            setShowThinking(true);
+          }
           return false;
         }
         if (event.type === "status" && event.message) {
@@ -719,11 +764,16 @@ export function AiWritingPanel() {
     copywritingModels.find((m) => m.id === modelSlug)?.label ||
     modelSlug ||
     "当前模型";
-  const shownModelLabel =
-    (streamModel &&
-      (copywritingModels.find((m) => m.id === streamModel)?.label ||
-        streamModel)) ||
-    (generating ? pickedModelLabel : "");
+  const reviewing = streamPhaseKind === "review";
+  const shownModelLabel = reviewing
+    ? reviewModels.find((m) => m.id === (streamModel || reviewModel))?.label ||
+      streamModel ||
+      reviewModel ||
+      "人话审核"
+    : (streamModel &&
+        (copywritingModels.find((m) => m.id === streamModel)?.label ||
+          streamModel)) ||
+      (generating ? pickedModelLabel : "");
   const streamPhase =
     saving || preview || distillPreview
       ? null
@@ -931,7 +981,7 @@ export function AiWritingPanel() {
             <div>
               <div className="mb-2 text-sm text-[var(--muted)]">口播形式</div>
               <p className="mb-2 text-xs text-[var(--muted)]">
-                选了就按口播手 Agent 写：单人是吸引力连环钩，对谈是一问一钩、每次只揭一层。需求框只放素材。
+                选了就按口播手写：要有活人感，像当面说。单人是连环钩，对谈是一问一钩。需求框只放素材。
               </p>
               <div className="flex flex-wrap gap-2">
                 {ORAL_MODES.map((a) => (
@@ -1197,6 +1247,27 @@ export function AiWritingPanel() {
               />
             </label>
           )}
+          {reviewModels.length > 0 && (
+            <label className="block">
+              <div className="mb-2 text-sm text-[var(--muted)]">人话审核</div>
+              <ModelPicker
+                className="w-full max-w-md"
+                buttonClassName="field model-picker__btn w-full max-w-md"
+                title="选择人话审核模型"
+                value={reviewModel}
+                items={reviewModels}
+                disabled={busy}
+                onChange={(next) => {
+                  setReviewModel(next);
+                  try {
+                    localStorage.setItem("dwgeo-review-model", next);
+                  } catch {
+                    // ignore
+                  }
+                }}
+              />
+            </label>
+          )}
           <div className="flex flex-wrap items-center gap-2 pt-2">
             <button
               type="button"
@@ -1242,10 +1313,16 @@ export function AiWritingPanel() {
             </p>
           ) : (
             <div className="ai-result-stream mt-4 space-y-4">
+              {generating && streamStatus ? (
+                <p className="text-sm text-[var(--muted)]">{streamStatus}</p>
+              ) : null}
               {(thinkingText || preview?.thinking) && (
                 <div
                   className={`ai-thinking-panel${
-                    showThinking && busy && !contentText && !distillPreview
+                    showThinking &&
+                    busy &&
+                    !distillPreview &&
+                    (!contentText || streamPhaseKind === "review")
                       ? " is-live"
                       : ""
                   }`}
@@ -1258,7 +1335,9 @@ export function AiWritingPanel() {
                       setShowThinking((v) => !v);
                     }}
                   >
-                    <span>Thinking</span>
+                    <span>
+                      {streamPhaseKind === "review" ? "人话审核" : "Thinking"}
+                    </span>
                     <span className="text-[var(--muted)]">
                       {showThinking ? "收起" : "展开"}
                     </span>
@@ -1384,6 +1463,29 @@ export function AiWritingPanel() {
                       dangerouslySetInnerHTML={{ __html: preview.bodyHtml }}
                     />
                   )}
+                  <HumanTalkRevise
+                    kind={kind === "oral" ? "podcast" : "article"}
+                    text={serializeCopyDraft({
+                      title: preview.title,
+                      summary: preview.summary,
+                      scriptTitle: preview.scriptTitle,
+                      bodyMarkdown: preview.bodyMarkdown,
+                    })}
+                    reviewModel={reviewModel}
+                    disabled={busy}
+                    confirming={saving}
+                    confirmLabel="保存为文章并编辑"
+                    onText={(next) => {
+                      const parsed = parseCopyResponse(next);
+                      patchPreview({
+                        title: parsed.title,
+                        summary: parsed.summary,
+                        scriptTitle: parsed.scriptTitle || preview.scriptTitle,
+                        bodyMarkdown: parsed.bodyMarkdown,
+                      });
+                    }}
+                    onConfirm={() => savePreviewAsArticle()}
+                  />
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"

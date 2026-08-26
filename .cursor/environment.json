@@ -1,0 +1,10 @@
+{
+  "name": "dianwu-geo",
+  "install": "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --ignore-scripts && npm rebuild better-sqlite3",
+  "ports": [
+    {
+      "name": "next",
+      "port": 3000
+    }
+  ]
+}

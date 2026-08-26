@@ -11,13 +11,15 @@ export type AiProviderChannel =
   | "doubao"
   | "qwen"
   | "suno"
-  | "cloudflare";
+  | "cloudflare"
+  | "cursor";
 
 /** 业务用途：一条模型可勾选多个，决定出现在哪些前台下拉 */
 export type AiModelUse =
   | "copywriting"
   | "script"
   | "shot"
+  | "review"
   | "infographic"
   | "cover"
   | "character"
@@ -159,6 +161,7 @@ export const AI_MODEL_USES: { id: AiModelUse; label: string; modality: AiModalit
   { id: "copywriting", label: "AI 写稿", modality: "text" },
   { id: "script", label: "短视频剧本", modality: "text" },
   { id: "shot", label: "单镜改写", modality: "text" },
+  { id: "review", label: "人话审核", modality: "text" },
   { id: "infographic", label: "信息图", modality: "image" },
   { id: "cover", label: "文章封面", modality: "image" },
   { id: "character", label: "角色 / 分镜出图", modality: "image" },
@@ -175,7 +178,8 @@ export const AI_PROVIDER_CHANNELS: { id: AiProviderChannel; label: string }[] = 
   { id: "openrouter", label: "OpenRouter" },
   { id: "ark", label: "火山方舟（Ark）" },
   { id: "gemini", label: "代理站 (openai-proxy)" },
-  { id: "anthropic", label: "Anthropic Claude" },
+  { id: "anthropic", label: "Claude（代理站）" },
   { id: "suno", label: "Suno (sunoapi.org)" },
   { id: "cloudflare", label: "Cloudflare AI" },
+  { id: "cursor", label: "Cursor API" },
 ];

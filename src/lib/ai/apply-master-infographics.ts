@@ -1,4 +1,5 @@
 import {
+  dedupeInfographicImgsInHtml,
   htmlHasInfographicUrl,
   insertInfographicsIntoHtml,
   mergeInfographicHtml,
@@ -25,7 +26,9 @@ export function ensureStoredInfographicsInHtml(
     articleId,
     infographicRecordFamily(family),
   );
-  const source = unwrapInfographicParagraphs(html || "");
+  const source = dedupeInfographicImgsInHtml(
+    unwrapInfographicParagraphs(html || ""),
+  );
   if (!rows.length) return source;
   const placements = placementsFromInfographicRows(rows);
   const missing = placements.filter(

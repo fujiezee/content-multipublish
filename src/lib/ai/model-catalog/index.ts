@@ -12,6 +12,7 @@ import {
 import type {
   AiModelConfig,
   AiModelInput,
+  AiModelUse,
   AiModelView,
   ListAiModelsQuery,
 } from "@/lib/ai/model-catalog/types";
@@ -52,6 +53,26 @@ export function seedAiModelCatalog(database: Db) {
   ensureDefaultModelBadges(database);
   ensureUserFacingModelCopy(database);
   ensureMusicPublishDurationModels(database);
+  ensureReviewUseOnTextModels(database);
+}
+
+/** 已有文本写稿/剧本模型补上人话审核用途，前台才能单独选审核模型 */
+function ensureReviewUseOnTextModels(database: Db) {
+  for (const row of listAiModelRows(database)) {
+    if (row.modality !== "text") continue;
+    let uses: AiModelUse[] = [];
+    try {
+      const parsed = JSON.parse(row.uses_json) as unknown;
+      uses = Array.isArray(parsed)
+        ? parsed.filter((item): item is AiModelUse => typeof item === "string")
+        : [];
+    } catch {
+      continue;
+    }
+    if (!uses.includes("copywriting") && !uses.includes("script")) continue;
+    if (uses.includes("review")) continue;
+    updateAiModelRow(database, row.id, { uses: [...uses, "review"] });
+  }
 }
 
 /** 汽水上架至少 1 分钟：打开 V5.5（可指定时长），并刷新出歌说明 */
@@ -263,6 +284,47 @@ export async function syncQwenModelsIntoCatalog(database: Db): Promise<{
     inserted,
     skipped: skipped + priced.skipped,
     priced: priced.priced,
+  };
+}
+
+/** 从 Cursor API /v1/models 拉取并补种 Composer / Grok 等 */
+export async function syncCursorModelsIntoCatalog(database: Db): Promise<{
+  fetched: number;
+  inserted: number;
+  skipped: number;
+  priced?: number;
+}> {
+  migrateAiModelCatalog(database);
+  seedAiModelCatalog(database);
+  const { fetchCursorModelIds, cursorModelIdToInput } = await import(
+    "@/lib/ai/model-catalog/cursor-seed"
+  );
+  const ids = await fetchCursorModelIds();
+  let inserted = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    if (shouldSkipSyncImport(id, "cursor")) {
+      skipped += 1;
+      continue;
+    }
+    const input = cursorModelIdToInput(id);
+    if (!input) {
+      skipped += 1;
+      continue;
+    }
+    if (getAiModelRowBySlug(database, input.slug)) {
+      skipped += 1;
+      continue;
+    }
+    insertAiModelRow(database, input);
+    inserted += 1;
+  }
+  const pricedAfter = syncOfficialPricingIntoCatalog(database);
+  return {
+    fetched: ids.length,
+    inserted,
+    skipped: skipped + pricedAfter.skipped,
+    priced: pricedAfter.priced,
   };
 }
 

@@ -166,13 +166,6 @@ export function NavIcon({ name }: { name: AppNavIcon }) {
           <path d="M13.2 7 10.8 17" />
         </Icon>
       );
-    case "admin":
-      return (
-        <Icon>
-          <path d="M12 3.5 19 7v5.2c0 4.3-3 7.4-7 8.8-4-1.4-7-4.5-7-8.8V7l7-3.5z" />
-          <path d="M9.5 12.2 11.2 14l3.4-3.6" />
-        </Icon>
-      );
     default:
       return null;
   }

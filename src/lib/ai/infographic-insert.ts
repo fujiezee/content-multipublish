@@ -283,6 +283,26 @@ export function htmlHasInfographicUrl(html: string, url: string): boolean {
   return escaped !== needle && html.includes(escaped);
 }
 
+/** Drop later copies of the same infographic URL (generate used to insert twice). */
+export function dedupeInfographicImgsInHtml(html: string): string {
+  if (!html) return html;
+  const seen = new Set<string>();
+  return html.replace(/<img\b[^>]*>/gi, (tag) => {
+    if (
+      !/data-infographic/i.test(tag) &&
+      !/data-dw-infographic/i.test(tag)
+    ) {
+      return tag;
+    }
+    const src = tag.match(/\ssrc=["']([^"']+)["']/i)?.[1];
+    const url = src ? normalizeInfographicUrl(src) : "";
+    if (!url) return tag;
+    if (seen.has(url)) return "";
+    seen.add(url);
+    return tag;
+  });
+}
+
 export function countInfographicBlocks(html: string): number {
   return splitHtmlBlocks(html).filter(isInfographicBlock).length;
 }
@@ -365,12 +385,17 @@ export function insertInfographicsIntoHtml(
   html: string,
   placements: InfographicPlacement[],
 ): string {
-  if (!placements.length) return html;
+  const source = dedupeInfographicImgsInHtml(unwrapInfographicParagraphs(html));
+  if (!placements.length) return source;
 
-  const source = unwrapInfographicParagraphs(html);
-  const pending = placements.filter(
-    (p) => p.url && !htmlHasInfographicUrl(source, p.url),
-  );
+  const seen = new Set<string>();
+  const pending: InfographicPlacement[] = [];
+  for (const p of placements) {
+    const url = normalizeInfographicUrl(p.url);
+    if (!url || seen.has(url) || htmlHasInfographicUrl(source, url)) continue;
+    seen.add(url);
+    pending.push({ ...p, url });
+  }
   if (!pending.length) return source;
 
   const rawBlocks = splitHtmlBlocks(source);

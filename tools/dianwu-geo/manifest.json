@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "点物GEO 文章多平台同步助手",
   "description": "点物GEO 文章多平台同步助手 · https://dianwu.ai",
-  "version": "2.11.16",
+  "version": "2.12.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsqIOTEDF1wwUTDUByOOA20VMuQhGnGJuFMZKZ5ibsqRJrikY7V5knCtv4Kg31/CJsuHdCNHMbq87U7i2E2SilO1ytoiJFC3HJlh5YOiCbYaObnGUlG5bVe9vDdWQZC73bsazOwO9RDHjLhgkzLrl0gum4UV2tZQO6YCCvXxHFs9P7yBXD/ncgjBwJVi/xIw1ax3tNvhtDK4jB7vxrIGfBAyMSomuvoeqMdDH5N+3qqvVFbeDef7PDoFIO2rf2LRAxD0G3LD+QIOf52oh15sSPBNglYnN3JwLO4CmfSPflvAGAEO7S8qaR2q/zNqRdTAtuomQ7iEghFFPWpbDVTbybwIDAQAB",
   "icons": {
     "16": "assets/icon-16.png",

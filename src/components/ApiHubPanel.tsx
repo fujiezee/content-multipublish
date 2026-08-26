@@ -257,7 +257,6 @@ export function ApiHubPanel() {
         <p>
           OpenAI 兼容基址{" "}
           <code className="api-hub__code">{API_PUBLIC_BASE}/v1</code>
-          。售价按分四舍五入，等于官网刊例 × 当前档位（×1.5 / ×1.3 / ×1.1）。文本按 token 扣钱包，余额不足返回 402。
         </p>
         <p className="api-hub__docs-entry">
           <Link href="/api-hub/docs" className="btn btn-primary">

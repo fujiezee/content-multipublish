@@ -33,20 +33,61 @@ export function podcastTone(
   mode: PodcastMode,
   feel?: string,
 ): string {
-  const act = String(feel || "").replace(/\s+/g, " ").trim().slice(0, 36);
+  const act = String(feel || "").replace(/\s+/g, " ").trim().slice(0, 24);
   if (mode === "solo") {
     return act
-      ? `你可以用「${act}」的语气说话吗？像吸引力口播当面把一件事说破，有轻重和气口，钩子加重，段尾像还没说完。不要匀速念稿，不要播音腔，不要短剧喊麦。`
-      : "你可以用又近又狠的语气说话吗？像吸引力口播，第一句就要停住听的人，有轻重，段尾像还没说完。不要匀速念稿，不要播音腔，不要短剧喊麦。";
+      ? `你可以用特别${act}的语气说话吗？像跟身边的人说一件真事。`
+      : "你可以用特别着急、又想把人留住的语气说话吗？像跟身边的人说一件真事。";
   }
   if (speaker === "guest") {
     return act
-      ? `你可以用「${act}」的语气说话吗？对谈里认真答，但带着劲，揭那一层时加重，话尾像还没说完。不要老师念答案，不要匀速，不要播音腔。`
-      : "你可以用恨铁不成钢、又要把一层纸揭开的语气说话吗？认真答，揭穿时加重，话尾像还没说完。不要念稿，不要播音腔。";
+      ? `你可以用特别${act}的语气说话吗？揭那一层时声音加重。`
+      : "你可以用特别认真、又有点心疼的语气说话吗？揭那一层时声音加重。";
   }
   return act
-    ? `你可以用「${act}」的语气说话吗？你是听的人在追问，急、短、不服，问号顶上去。不要客客气气，不要报幕，不要播音腔。`
-    : "你可以用又急又不服的语气说话吗？像被戳到才问出口，问号顶上去，短、冲。不要客客气气，不要播音腔。";
+    ? `你可以用特别${act}的语气说话吗？像被人戳了一下才问出口。`
+    : "你可以用特别着急、不服气的语气说话吗？像被人戳了一下才问出口。";
+}
+
+export function podcastCotTag(
+  speaker: PodcastSpeaker,
+  mode: PodcastMode,
+  feel?: string,
+): string {
+  const t = String(feel || "");
+  if (/笑|开心|乐/.test(t)) return "开心";
+  if (/无奈|心疼|痛/.test(t)) return "无奈";
+  if (/收住|金句|郑重/.test(t)) return "郑重";
+  if (/揭|认真/.test(t)) return "认真";
+  if (/急|慌|追|不服|冲|钩|停住/.test(t)) return "着急";
+  if (speaker === "guest") return "认真";
+  return mode === "solo" ? "着急" : "着急";
+}
+
+/** 豆包 2.0 表现力：句子外包 cot 标签，配音才跟得上情绪 */
+export function wrapPodcastCot(
+  text: string,
+  speaker: PodcastSpeaker,
+  mode: PodcastMode,
+  feel?: string,
+): string {
+  const spoken = String(text || "").replace(/\s+/g, " ").trim();
+  if (!spoken) return spoken;
+  const tag = podcastCotTag(speaker, mode, feel);
+  return `<cot text=${tag}>${spoken}</cot>`;
+}
+
+export function podcastAudioEmotion(
+  speaker: PodcastSpeaker,
+  mode: PodcastMode,
+  feel?: string,
+): string | undefined {
+  const tag = podcastCotTag(speaker, mode, feel);
+  if (tag === "开心") return "happy";
+  if (tag === "无奈") return "sad";
+  if (tag === "着急") return "angry";
+  if (tag === "郑重") return "surprised";
+  return undefined;
 }
 
 export function parsePodcastTurns(raw?: string | null): PodcastTurn[] {

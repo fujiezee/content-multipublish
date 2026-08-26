@@ -32,7 +32,7 @@ function inferArkUses(modality: AiModality): AiModelUse[] {
   if (modality === "image") return ["character", "cover", "infographic"];
   if (modality === "video") return ["video"];
   if (modality === "audio") return ["tts"];
-  return ["copywriting", "script", "shot"];
+  return ["copywriting", "script", "shot", "review"];
 }
 
 function inferProvider(id: string): AiProviderChannel {
@@ -101,7 +101,7 @@ export async function fetchArkModelIds(): Promise<string[]> {
   }
   const config = resolveDoubaoConfig(stored);
   if (!config?.apiKey) {
-    throw new Error("未配置 ARK_API_KEY / 查排名页方舟 Key");
+    throw new Error("未配置 ARK_API_KEY");
   }
   const res = await fetch(`${config.baseUrl}/models`, {
     headers: { authorization: `Bearer ${config.apiKey}` },

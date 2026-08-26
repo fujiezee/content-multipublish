@@ -12,9 +12,6 @@ import {
 } from "@/lib/ai/mention-check";
 import { resolveDeepSeekConfig } from "@/lib/ai/deepseek";
 import {
-  DEFAULT_DOUBAO_MODEL,
-  isDoubaoChatModelId,
-  normalizeDoubaoModelId,
   resolveDoubaoConfig,
 } from "@/lib/ai/doubao";
 import type { MentionProbeSource, MentionSource } from "@/lib/types";
@@ -81,19 +78,9 @@ export async function PUT(req: Request) {
   const body = await req.json().catch(() => ({}));
   const record =
     body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  let doubaoModel =
-    typeof record.doubaoModel === "string" ? record.doubaoModel : undefined;
-  if (doubaoModel !== undefined && doubaoModel.trim()) {
-    doubaoModel = isDoubaoChatModelId(doubaoModel)
-      ? normalizeDoubaoModelId(doubaoModel)
-      : DEFAULT_DOUBAO_MODEL;
-  }
   const settings = saveMentionSettings({
     brands: parseStringList(record.brands, 12),
     questions: parseStringList(record.questions, 8),
-    doubaoApiKey:
-      typeof record.doubaoApiKey === "string" ? record.doubaoApiKey : undefined,
-    doubaoModel,
   });
   return Response.json({
     settings,

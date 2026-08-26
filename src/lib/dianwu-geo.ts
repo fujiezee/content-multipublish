@@ -1156,3 +1156,28 @@ export async function publishDouyinMusicViaExtension(input: {
     { acceptFailure: true },
   );
 }
+
+export type DianwuGeoPodcastPublishResult = DianwuGeoVideoPublishResult;
+
+export async function publishXiaoyuzhouPodcastViaExtension(input: {
+  audioUrl: string;
+  coverUrl?: string;
+  title: string;
+  shownotes?: string;
+}): Promise<DianwuGeoPodcastPublishResult> {
+  attachReadyListener();
+  if (!(await waitForDianwuGeoExtension(3_000))) {
+    throw extensionMissingError();
+  }
+  return sendExternalExtensionMessage<DianwuGeoPodcastPublishResult>(
+    {
+      type: "PUBLISH_XIAOYUZHOU_PODCAST",
+      audioUrl: input.audioUrl,
+      coverUrl: input.coverUrl || "",
+      title: input.title,
+      shownotes: input.shownotes || "",
+    },
+    4 * 60_000,
+    { acceptFailure: true },
+  );
+}

@@ -66,6 +66,43 @@ export function resolveDeepSeekStreamModel(config: DeepSeekConfig): string {
   return config.model;
 }
 
+function normalizeOpenAiBase(url: string) {
+  let baseUrl = url.replace(/\/$/, "");
+  if (!baseUrl.endsWith("/v1")) baseUrl = `${baseUrl}/v1`;
+  return baseUrl;
+}
+
+/** 官方 DeepSeek 没钱时，改走 OPENAI_BASE_URL 代理站（同一模型名）。 */
+function proxyFallbackConfig(primary: DeepSeekConfig): DeepSeekConfig | null {
+  const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
+  const rawBase = process.env.OPENAI_BASE_URL?.trim() || "";
+  if (!apiKey || !rawBase) return null;
+  const baseUrl = normalizeOpenAiBase(rawBase);
+  if (/api\.deepseek\.com/i.test(baseUrl)) return null;
+  if (baseUrl === primary.baseUrl && apiKey === primary.apiKey) return null;
+  return { apiKey, baseUrl, model: primary.model };
+}
+
+function proxyModelName(model: string) {
+  if (model === "deepseek-reasoner") return "deepseek-v4-pro";
+  if (model === "deepseek-chat") return "deepseek-v4-flash";
+  return model;
+}
+
+function isDeepSeekBalanceFail(status: number, raw: string) {
+  return status === 402 || /insufficient balance/i.test(raw);
+}
+
+function deepSeekHttpError(status: number, raw: string) {
+  if (isDeepSeekBalanceFail(status, raw)) {
+    return "DeepSeek 官方账号没钱了。换一个写稿模型，或到 platform.deepseek.com 加余额。";
+  }
+  if (status === 401 || status === 403) {
+    return "DeepSeek 密钥无效，检查 DEEPSEEK_API_KEY";
+  }
+  return `DeepSeek API ${status}: ${raw.slice(0, 300)}`;
+}
+
 export async function chatCompletion(
   messages: { role: "system" | "user" | "assistant"; content: string }[],
   options?: {
@@ -110,7 +147,44 @@ export async function chatCompletion(
 
     const raw = await res.text();
     if (!res.ok) {
-      throw new Error(`DeepSeek API ${res.status}: ${raw.slice(0, 300)}`);
+      const fallback = proxyFallbackConfig(config);
+      if (fallback && isDeepSeekBalanceFail(res.status, raw)) {
+        const retry = await fetch(`${fallback.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${fallback.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: proxyModelName(options?.model ?? fallback.model),
+            messages,
+            temperature: options?.temperature ?? 0.7,
+            max_tokens: options?.maxTokens ?? 4096,
+            ...deepSeekThinkFields({
+              thinking: options?.thinking ?? "disabled",
+              reasoningEffort: options?.reasoningEffort,
+            }),
+          }),
+          signal: controller.signal,
+        });
+        const retryRaw = await retry.text();
+        if (!retry.ok) {
+          throw new Error(deepSeekHttpError(retry.status, retryRaw));
+        }
+        const retryJson = JSON.parse(retryRaw) as {
+          choices?: { message?: { content?: string } }[];
+          error?: { message?: string };
+        };
+        if (retryJson.error?.message) {
+          throw new Error(retryJson.error.message);
+        }
+        const retryContent = retryJson.choices?.[0]?.message?.content?.trim();
+        if (!retryContent) {
+          throw new Error("DeepSeek 返回空内容");
+        }
+        return retryContent;
+      }
+      throw new Error(deepSeekHttpError(res.status, raw));
     }
 
     const json = JSON.parse(raw) as {
@@ -167,26 +241,48 @@ export async function* streamChatCompletion(
 
   try {
     const model = options?.model ?? resolveDeepSeekStreamModel(config);
-    const res = await fetch(`${config.baseUrl}/chat/completions`, {
+    const payload = {
+      model,
+      messages,
+      stream: true as const,
+      temperature: options?.temperature ?? 0.7,
+      max_tokens: options?.maxTokens ?? 4096,
+      ...deepSeekThinkFields(options),
+    };
+    let endpoint = config;
+    let res = await fetch(`${endpoint.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${config.apiKey}`,
+        authorization: `Bearer ${endpoint.apiKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        stream: true,
-        temperature: options?.temperature ?? 0.7,
-        max_tokens: options?.maxTokens ?? 4096,
-        ...deepSeekThinkFields(options),
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
     if (!res.ok) {
       const raw = await res.text();
-      throw new Error(`DeepSeek API ${res.status}: ${raw.slice(0, 300)}`);
+      const fallback = proxyFallbackConfig(config);
+      if (!fallback || !isDeepSeekBalanceFail(res.status, raw)) {
+        throw new Error(deepSeekHttpError(res.status, raw));
+      }
+      endpoint = fallback;
+      res = await fetch(`${endpoint.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${endpoint.apiKey}`,
+        },
+        body: JSON.stringify({
+          ...payload,
+          model: proxyModelName(model),
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const retryRaw = await res.text();
+        throw new Error(deepSeekHttpError(res.status, retryRaw));
+      }
     }
 
     const reader = res.body?.getReader();

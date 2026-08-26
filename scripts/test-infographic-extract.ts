@@ -4,6 +4,7 @@ import {
   extractInfographicImgs,
   insertInfographicsIntoHtml,
   listArticleSections,
+  dedupeInfographicImgsInHtml,
   mergeInfographicHtml,
   splitSentences,
   unwrapInfographicParagraphs,
@@ -78,6 +79,24 @@ function main() {
   );
   assert(firstSentenceHits === 1, "第一节开头仍在图前");
   console.log("PASS 插图在整节后，不会一句一张");
+
+  const dupOnce = insertInfographicsIntoHtml(twelve, [
+    { url: "/a.png", alt: "第一节", anchorText: first.anchorText },
+    { url: "/a.png", alt: "第一节又来", anchorText: first.anchorText },
+  ]);
+  assert(
+    extractInfographicImgs(dupOnce).filter((img) => img.url === "/a.png").length ===
+      1,
+    "同一张图不能插两遍",
+  );
+  const doubled =
+    '<img src="/a.png" alt="第一节" data-infographic="1">' +
+    '<img src="/a.png" alt="第一节" data-infographic="1"><p>后文。</p>';
+  assert(
+    extractInfographicImgs(dedupeInfographicImgsInHtml(doubled)).length === 1,
+    "正文里已经插了两遍时应收成一张",
+  );
+  console.log("PASS 同一 URL 只插一次");
 
   const firstPlaced = insertInfographicsIntoHtml(twelve, [
     { url: "/a.png", alt: "第一节", anchorText: first.anchorText },

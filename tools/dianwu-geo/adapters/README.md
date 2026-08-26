@@ -4,7 +4,7 @@
 
 ## 版本（必跟迭代）
 
-Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `version` 字段（当前 **2.11.7**）。
+Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `version` 字段（当前 **2.12.0**）。
 
 改适配器 / 桥接 / 规则后**必须** bump：
 
@@ -54,6 +54,7 @@ Chrome 显示的版本来自根目录 [`manifest.json`](../manifest.json) 的 `v
 | `xiaohongshu` | 小红书 | **填稿确认制**：无稳定草稿 API；DOM 填入后待用户点发布 |
 | `douyin` | 抖音文章 | **填稿确认制**：`chrome.debugger` 写入标题/正文，封面和发布人点 |
 | `douyin_video` | 抖音视频 | **视频专用**（不进文章同步）：上传页塞成片，写标题/简介，发布人点 |
+| `xiaoyuzhou` | 小宇宙播客 | **播客专用**（不进文章同步）：打开主播后台写入音频/封面/标题，发布人点 |
 | `weixin` | 微信公众号 | **覆盖内置**：`chrome.debugger` 打开图文编辑器写标题/正文，封面和发表人点 |
 
 每个平台：`adapters/<id>.js` + `rules/<id>.json`（DNR）+ `register-extra-adapters.js` 注册。

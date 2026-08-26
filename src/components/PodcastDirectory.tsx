@@ -89,7 +89,7 @@ export function PodcastDirectory() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">播客</h1>
           <p className="mt-1 text-[var(--muted)]">
-            听已经生成的文章对谈。写对谈、换音色在文章页。
+            听已经生成的文章对谈。写对谈、换音色在文章页。成片可发到小宇宙。
           </p>
         </div>
         <div className="flex gap-2">

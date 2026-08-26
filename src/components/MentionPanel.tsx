@@ -8,7 +8,6 @@ import type {
   MentionSource,
 } from "@/lib/types";
 import { MENTION_SOURCES } from "@/lib/types";
-import { DOUBAO_CHAT_MODELS } from "@/lib/ai/doubao";
 import { QuotaHint, QuotaMessage } from "@/components/QuotaHint";
 import { parseQuotaError, useQuota } from "@/components/useQuota";
 import { useInfiniteList } from "@/components/useInfiniteList";
@@ -50,8 +49,6 @@ export function MentionPanel() {
     doubao: false,
     sources: [],
   });
-  const [doubaoModel, setDoubaoModel] = useState("");
-  const [doubaoApiKey, setDoubaoApiKey] = useState("");
   const [useDeepseek, setUseDeepseek] = useState(true);
   const [useDoubao, setUseDoubao] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -106,7 +103,6 @@ export function MentionPanel() {
         if (data.settings) {
           setBrandsText(listToLines(data.settings.brands));
           setQuestionsText(listToLines(data.settings.questions));
-          setDoubaoModel(data.settings.doubao_model);
           setPasteQuestion((prev) => prev || data.settings!.questions[0] || "");
         }
         applyConfigured(data.configured, true);
@@ -131,7 +127,7 @@ export function MentionPanel() {
 
   const loading = booting;
 
-  async function saveSettings(extra?: { doubaoApiKey?: string }) {
+  async function saveSettings() {
     setSaving(true);
     setMessage(null);
     try {
@@ -141,8 +137,6 @@ export function MentionPanel() {
         body: JSON.stringify({
           brands: linesToList(brandsText),
           questions: linesToList(questionsText),
-          doubaoModel,
-          doubaoApiKey: extra?.doubaoApiKey ?? doubaoApiKey,
         }),
       });
       const data = (await res.json()) as {
@@ -156,11 +150,7 @@ export function MentionPanel() {
       }
       setBrandsText(listToLines(data.settings.brands));
       setQuestionsText(listToLines(data.settings.questions));
-      setDoubaoModel(data.settings.doubao_model);
       applyConfigured(data.configured);
-      if (extra?.doubaoApiKey || doubaoApiKey.trim()) {
-        setDoubaoApiKey("");
-      }
       return true;
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存失败");
@@ -255,7 +245,7 @@ export function MentionPanel() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">查排名</h1>
         <p className="mt-1 text-[var(--muted)]">
-          用 DeepSeek 和火山方舟里的豆包问同一组问题，看答案里有没有品牌词。这是模型探针，不是豆包 App 的收录排名。
+          用 DeepSeek 和豆包问同一组问题，看答案里有没有品牌词。这是模型探针，不是豆包 App 的收录排名。有次数或余额就能跑。
         </p>
       </div>
 
@@ -293,9 +283,6 @@ export function MentionPanel() {
                 onChange={(e) => setUseDeepseek(e.target.checked)}
               />
               DeepSeek
-              <span className={`badge ${configured.deepseek ? "badge-ok" : "badge-danger"}`}>
-                {configured.deepseek ? "已配置" : "未配置"}
-              </span>
             </label>
             <label className="flex items-center gap-2">
               <input
@@ -305,9 +292,6 @@ export function MentionPanel() {
                 onChange={(e) => setUseDoubao(e.target.checked)}
               />
               豆包
-              <span className={`badge ${configured.doubao ? "badge-ok" : "badge-danger"}`}>
-                {configured.doubao ? "已配置" : "未配置"}
-              </span>
             </label>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -337,83 +321,6 @@ export function MentionPanel() {
         </div>
 
         <div className="space-y-6">
-          <div className="card space-y-4 p-5">
-            <h2 className="text-lg font-medium">豆包（火山方舟）</h2>
-            <p className="text-sm text-[var(--muted)]">
-              网页版豆包没有接口。用方舟 API Key 调豆包模型。
-              不要填 Doubao-Seed-Character 这种角色名，用下面的对话模型，或控制台里的 ep- 接入点。
-              若提示欠费，先到火山引擎费用中心充值。
-            </p>
-            <label className="block">
-              <span className="mb-1 block text-sm text-[var(--muted)]">API Key</span>
-              <input
-                className="field"
-                type="password"
-                autoComplete="off"
-                value={doubaoApiKey}
-                onChange={(e) => setDoubaoApiKey(e.target.value)}
-                placeholder={configured.doubao ? "已保存，留空则不改" : "ARK 开头的方舟 Key"}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-sm text-[var(--muted)]">
-                模型 ID（方舟控制台的 Model ID 或 ep- 接入点，不要填角色名）
-              </span>
-              <select
-                className="field"
-                value={
-                  DOUBAO_CHAT_MODELS.includes(
-                    doubaoModel as (typeof DOUBAO_CHAT_MODELS)[number],
-                  )
-                    ? doubaoModel
-                    : "__custom"
-                }
-                onChange={(e) => {
-                  if (e.target.value === "__custom") {
-                    setDoubaoModel(doubaoModel.startsWith("ep-") ? doubaoModel : "ep-");
-                    return;
-                  }
-                  setDoubaoModel(e.target.value);
-                }}
-              >
-                {DOUBAO_CHAT_MODELS.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-                <option value="__custom">自定义接入点 ep-…</option>
-              </select>
-            </label>
-            {!DOUBAO_CHAT_MODELS.includes(
-              doubaoModel as (typeof DOUBAO_CHAT_MODELS)[number],
-            ) ? (
-              <input
-                className="field"
-                value={doubaoModel}
-                onChange={(e) => setDoubaoModel(e.target.value)}
-                placeholder="ep-xxxxxxxxxxxxxxxx"
-              />
-            ) : null}
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={saving || (!doubaoApiKey.trim() && !configured.doubao)}
-                onClick={() => void saveSettings({ doubaoApiKey })}
-              >
-                {saving ? "保存中…" : "保存豆包配置"}
-              </button>
-              <a
-                className="text-sm underline"
-                href="https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey"
-                target="_blank"
-                rel="noreferrer"
-              >
-                去方舟控制台拿 Key
-              </a>
-            </div>
-          </div>
-
           <div className="card space-y-4 p-5">
             <h2 className="text-lg font-medium">手工对照</h2>
             <p className="text-sm text-[var(--muted)]">

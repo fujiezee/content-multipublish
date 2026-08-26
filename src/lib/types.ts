@@ -101,7 +101,7 @@ export interface ArticleInfographic {
 }
 
 export type PodcastMode = "dialogue" | "solo";
-export type PodcastStatus = "idle" | "pending" | "ready" | "failed";
+export type PodcastStatus = "idle" | "pending" | "draft" | "ready" | "failed";
 export type PodcastSpeaker = "host" | "guest";
 
 export type PodcastTurn = {
@@ -629,6 +629,19 @@ export interface MusicPublishJob {
   song_title?: string;
 }
 
+export interface PodcastPublishJob {
+  id: string;
+  article_id: string;
+  podcast_id: string;
+  platform: string;
+  status: JobStatus;
+  error: string | null;
+  result_url: string | null;
+  created_at: string;
+  updated_at: string;
+  podcast_title?: string;
+}
+
 export interface ArticleVideoEpisode {
   id: string;
   series_id: string;
@@ -884,6 +897,29 @@ export const ORAL_MODES: {
     hint: "问的人追问，答的人每次只揭一层",
   },
 ];
+
+/** 工作区人话审核从对话改稿里收来的规则，可关掉。 */
+export interface HumanTalkRule {
+  id: string;
+  workspace_id: string;
+  rule: string;
+  enabled: number;
+  hit_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 对话改稿的改前/改后对照。 */
+export interface HumanTalkExample {
+  id: string;
+  workspace_id: string;
+  kind: "article" | "podcast" | "script";
+  before_text: string;
+  after_text: string;
+  rule: string;
+  user_note: string;
+  created_at: string;
+}
 
 /** 用户蒸馏的写手 Agent，写作风格可反复选用。 */
 export interface WriterAgent {

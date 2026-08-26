@@ -29,6 +29,10 @@ import {
 } from "@/lib/ai/video-gen";
 import { listImageGenModels } from "@/lib/ai/image-gen-models";
 import { listScriptLlmOptions, withScriptLlm } from "@/lib/ai/script-llm";
+import {
+  listHumanTalkModelOptions,
+  withHumanTalk,
+} from "@/lib/ai/human-talk-agent";
 import { directEpisodeShots } from "@/lib/ai/shot-agent";
 import {
   getArticleInWorkspace,
@@ -188,6 +192,7 @@ function payloadForArticle(articleId: string, workspaceId: string) {
     videoModels: videoGenModels(),
     imageModels: listImageGenModels(),
     scriptModels: listScriptLlmOptions(),
+    reviewModels: listHumanTalkModelOptions(),
     voices: listTtsVoices(workspaceId),
     characters: characterOptions(workspaceId),
     suggestedName: (article?.script_title || "").trim().slice(0, 16),
@@ -299,6 +304,7 @@ export async function POST(req: Request, ctx: Ctx) {
   const scriptModelId = String(body.scriptModel || body.script_model || "");
   const shotModelId = String(body.shotModel || body.shot_model || "");
   const imageModel = String(body.imageModel || body.image_model || "");
+  const reviewModelId = String(body.reviewModel || body.review_model || "");
   const encoder = new TextEncoder();
   const writeLine = (
     controller: ReadableStreamDefaultController<Uint8Array>,
@@ -310,6 +316,7 @@ export async function POST(req: Request, ctx: Ctx) {
   const run = async (
     controller: ReadableStreamDefaultController<Uint8Array>,
   ) => {
+    await withHumanTalk(auth.ctx.workspaceId, reviewModelId, async () => {
     await withScriptLlm(scriptModelId, async () => {
     const onEvent = async (event: {
       type: string;
@@ -740,11 +747,13 @@ export async function POST(req: Request, ctx: Ctx) {
       castNotice,
     });
     });
+    });
   };
 
   if (!stream) {
     try {
-      const generated = await withScriptLlm(scriptModelId, () => generateVideoSeries({
+      const generated = await withHumanTalk(auth.ctx.workspaceId, reviewModelId, () =>
+        withScriptLlm(scriptModelId, () => generateVideoSeries({
         title,
         bodyHtml,
         genre,
@@ -757,7 +766,8 @@ export async function POST(req: Request, ctx: Ctx) {
         speakMode,
         durationSec,
         savedNotes: existingSeries?.notes,
-      }));
+      })),
+      );
       replaceVideoSeries({
         articleId: id,
         genre: generated.genre,

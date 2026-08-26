@@ -137,12 +137,10 @@ export async function runMentionProbe(input: {
   const sources = wanted.filter((s) => available.includes(s));
 
   if (!sources.length) {
-    throw new Error(
-      "还没有可用的模型。DeepSeek 用 DEEPSEEK_API_KEY；豆包在本页填火山方舟 API Key，或设置 ARK_API_KEY",
-    );
+    throw new Error("模型还没通。有查排名次数或余额就可以跑，不用自己配方舟 Key。");
   }
   if (sources.includes("doubao") && !doubao) {
-    throw new Error("未配置豆包。在本页填入火山方舟 API Key");
+    throw new Error("豆包还没通。有次数或余额就可以跑，不用自己配方舟 Key。");
   }
 
   const questions = input.questions.map((q) => q.trim()).filter(Boolean).slice(0, 8);

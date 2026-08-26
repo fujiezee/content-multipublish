@@ -1,5 +1,5 @@
 /** Keep in sync with `tools/dianwu-geo/manifest.json`. */
-export const LATEST_EXTENSION_VERSION = "2.11.15";
+export const LATEST_EXTENSION_VERSION = "2.12.0";
 
 export function extensionDownloadUrl(version = LATEST_EXTENSION_VERSION) {
   return `/api/extension/download?v=${encodeURIComponent(version)}`;

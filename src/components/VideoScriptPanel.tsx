@@ -47,6 +47,7 @@ import { removeShot, voiceoverFromShots } from "@/lib/ai/shot-edit";
 import { dirtyStillsKeepSpeech, keepLocalShotMedia, platesEqual } from "@/lib/ai/shot-plate";
 import { FILM_STEPS, inferFilmStep } from "@/lib/ai/shot-qa";
 import { normalizeLookStyle, type LookStyleId } from "@/lib/ai/look-styles";
+import { HumanTalkRevise } from "@/components/HumanTalkRevise";
 import { LookStyleSelect } from "@/components/LookStyleSelect";
 import { ModelPicker } from "@/components/ModelPicker";
 import { VideoMusicPanel } from "@/components/VideoMusicPanel";
@@ -274,6 +275,7 @@ type Payload = {
   videoModels?: VideoModelOption[];
   imageModels?: ImageGenModelOption[];
   scriptModels?: ScriptModelOption[];
+  reviewModels?: ScriptModelOption[];
   voices?: VoiceOption[];
   characters?: CharacterOption[];
   cast?: CharacterOption[];
@@ -357,7 +359,7 @@ function inferWorkStep(message: string): WorkStepId | null {
   }
   if (/认角色|认出了|从角色库挂上/.test(message)) return "cast";
   if (/分镜导演|分镜已排|分镜已切|重排分镜/.test(message)) return "shots";
-  if (/审稿|立场写反|核立场|共鸣|反应镜/.test(message)) return "review";
+  if (/审稿|立场写反|核立场|共鸣|反应镜|人话/.test(message)) return "review";
   if (/人设/.test(message)) return "stance";
   if (/补第|重写|写剧本|正在写|正在拆|落剧本|JSON/.test(message)) {
     return "write";
@@ -446,6 +448,8 @@ export function VideoScriptPanel({
   const [scriptModels, setScriptModels] = useState<ScriptModelOption[]>([]);
   const [scriptModelId, setScriptModelId] = useState("deepseek-reasoner");
   const [shotModelId, setShotModelId] = useState("deepseek-reasoner");
+  const [reviewModels, setReviewModels] = useState<ScriptModelOption[]>([]);
+  const [reviewModelId, setReviewModelId] = useState("deepseek-chat");
   const [seriesName, setSeriesName] = useState("");
   const [premise, setPremise] = useState("");
   const premiseFilled = useRef(false);
@@ -536,6 +540,29 @@ export function VideoScriptPanel({
       };
       setScriptModelId((cur) => pickReady(readStoredScriptModel(articleId), cur));
       setShotModelId((cur) => pickReady(readStoredShotModel(articleId), cur));
+    }
+    const reviews = data.reviewModels?.length
+      ? data.reviewModels
+      : data.scriptModels || [];
+    if (reviews.length) {
+      setReviewModels(reviews);
+      setReviewModelId((cur) => {
+        let saved = "";
+        try {
+          saved = localStorage.getItem("dwgeo-review-model") || "";
+        } catch {
+          saved = "";
+        }
+        const pick = saved || cur;
+        const ready = reviews.find((m) => m.id === pick && m.ready);
+        if (ready) return ready.id;
+        return (
+          reviews.find((m) => m.id === "deepseek-chat" && m.ready)?.id ||
+          reviews.find((m) => m.ready)?.id ||
+          reviews[0]?.id ||
+          "deepseek-chat"
+        );
+      });
     }
     if (data.characters) {
       setCharacters(data.characters.map((row) => ({ ...row })));
@@ -825,6 +852,7 @@ export function VideoScriptPanel({
           voiceId,
           scriptModel: scriptModelId,
           shotModel: shotModelId,
+          reviewModel: reviewModelId,
           imageModel: imageModelId,
           regenerateEpisodeId: regenerateShots ? undefined : regenerateEpisodeId,
           episodeId: regenerateShots ? regenerateEpisodeId : undefined,
@@ -867,11 +895,11 @@ export function VideoScriptPanel({
             setModelName(event.model);
           } else if (event.type === "thinking") {
             setWorkStep((cur) =>
-              cur === "cast" || cur === "looks" || cur === "shots" ? cur : "think",
+              workStepIndex(cur) > workStepIndex("think") ? cur : "think",
             );
           } else if (event.type === "content") {
             setWorkStep((cur) =>
-              cur === "cast" || cur === "looks" || cur === "shots" ? cur : "write",
+              workStepIndex(cur) > workStepIndex("write") ? cur : "write",
             );
           } else if (event.type === "partial") {
             applyPayload(event as unknown as Payload);
@@ -1836,6 +1864,40 @@ export function VideoScriptPanel({
               }}
             />
           </label>
+          <label className="script-toolbar__voice" title="专门抓机器稿和接不上的话">
+            <span>人话审核</span>
+            <ModelPicker
+              className="script-toolbar__llm-wrap"
+              buttonClassName="field script-toolbar__llm model-picker__btn"
+              title="选择人话审核模型"
+              value={reviewModelId}
+              items={
+                reviewModels.length
+                  ? reviewModels
+                  : scriptModels.length
+                    ? scriptModels
+                    : [
+                        {
+                          id: "deepseek-chat",
+                          label: "DeepSeek 对话",
+                          hint: "",
+                          cost: "",
+                          ready: true,
+                          badges: ["recommended"],
+                        },
+                      ]
+              }
+              disabled={busy}
+              onChange={(next) => {
+                setReviewModelId(next);
+                try {
+                  localStorage.setItem("dwgeo-review-model", next);
+                } catch {
+                  // ignore
+                }
+              }}
+            />
+          </label>
           <label className="script-toolbar__voice" title="专门排分镜画面和节奏，不对白。可以和写剧本不是同一个模型">
             <span>分镜</span>
             <ModelPicker
@@ -2292,6 +2354,55 @@ export function VideoScriptPanel({
                         void saveEpisode({ ...ep, voiceover: e.target.value })
                       }
                     />
+                    {ep.voiceover.trim() ? (
+                    <HumanTalkRevise
+                      kind="script"
+                      text={JSON.stringify(
+                        {
+                          episodes: [
+                            {
+                              episode_no: ep.episode_no,
+                              hook: ep.hook,
+                              voiceover: ep.voiceover,
+                            },
+                          ],
+                        },
+                        null,
+                        2,
+                      )}
+                      reviewModel={reviewModelId}
+                      disabled={busy}
+                      onText={async (next) => {
+                        let hook = ep.hook;
+                        let voiceover = ep.voiceover;
+                        try {
+                          const json = JSON.parse(next) as {
+                            episodes?: Array<{
+                              hook?: unknown;
+                              voiceover?: unknown;
+                            }>;
+                          };
+                          const row = json.episodes?.[0];
+                          if (row) {
+                            if (typeof row.hook === "string" && row.hook.trim()) {
+                              hook = row.hook.trim();
+                            }
+                            if (
+                              typeof row.voiceover === "string" &&
+                              row.voiceover.trim()
+                            ) {
+                              voiceover = row.voiceover.trim();
+                            }
+                          } else if (next.trim()) {
+                            voiceover = next.trim();
+                          }
+                        } catch {
+                          if (next.trim()) voiceover = next.trim();
+                        }
+                        await saveEpisode({ ...ep, hook, voiceover });
+                      }}
+                    />
+                    ) : null}
                     <input
                       className="field"
                       value={

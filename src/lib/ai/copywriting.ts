@@ -14,7 +14,9 @@ import {
   defaultCatalogSlug,
   listCatalogCopywritingModels,
 } from "@/lib/ai/model-catalog/legacy";
-import { stripBodyLabel } from "@/lib/ai/strip-body-label";
+import {
+  parseCopyResponse,
+} from "@/lib/ai/copy-parse";
 import type {
   CopywritingKind,
   CopywritingStyle,
@@ -36,6 +38,7 @@ import {
   oralKindInstruction,
   oralModeLabel,
   oralTaskLock,
+  PLAIN_TALK,
   resolveOralMode,
   stampOralHtml,
 } from "@/lib/ai/oral-copy-agent";
@@ -56,11 +59,22 @@ import {
   needsStructureRewrite,
   structureRewritePrompt,
 } from "@/lib/ai/copy-structure";
+import {
+  copywritingNeedsHumanTalk,
+  polishHumanTalk,
+  streamPolishHumanTalk,
+  activeHumanTalkModel,
+} from "@/lib/ai/human-talk-agent";
 
 import {
   cleanScriptTitle,
   looksLikeManualScriptTitle,
 } from "@/lib/ai/script-title";
+
+export {
+  parseCopyResponse,
+  serializeCopyDraft,
+} from "@/lib/ai/copy-parse";
 
 export {
   cleanScriptTitle,
@@ -99,7 +113,12 @@ export type GeneratedCopy = {
 };
 
 export type CopyStreamEvent =
-  | { type: "meta"; usedCorpus: { id: string; title: string }[]; model: string }
+  | {
+      type: "meta";
+      usedCorpus: { id: string; title: string }[];
+      model: string;
+      phase?: "write" | "review";
+    }
   | { type: "thinking"; delta: string }
   | { type: "content"; delta: string; replace?: boolean }
   | { type: "status"; message: string }
@@ -114,7 +133,7 @@ const KIND_INSTRUCTIONS: Record<CopywritingKind, string> = {
   marketing:
     "按所选营销路子写文案：先挖点，再让语料产品成为出口。禁止写成 GEO 科普长文或功能清单。",
   oral:
-    "按口播手写成能直接念的口播稿：连环钩、说话带情绪。禁止公众号课、禁止念稿。",
+    "按口播手写成能直接念的口播稿：连环钩、有活人感，像当面跟熟人说。禁止公众号课、禁止念稿、禁止播音腔。",
   social:
     "写适合微博、小红书、朋友圈的短文案。口语化、有记忆点，控制在 300 字以内，可加适量 emoji。",
   article:
@@ -244,7 +263,7 @@ const CORPUS_NO_FAKE_IMAGES = `- 禁止编造配图：不得插入语料未给�
 
 const STYLE_INSTRUCTIONS: Record<CopywritingStyle, string> = {
   default:
-    "专业、真诚、有温度，避免空洞形容词堆砌。结构藏在推进里：一句总判断，每段进一步；不要列一二三当提纲，不要把「现象/原理/方法」写成小标题。事实仍必须来自语料。",
+    "像跟小学生讲清楚一件真事：短句、口语、一句一事。少用空词。结构藏在推进里：一句总判断，每段进一步；不要列一二三当提纲，不要把「现象/原理/方法」写成小标题。事实仍必须来自语料。",
   dan_koe: `模仿 Dan Koe（thedankoe）的写作气质，但必须用中文输出（专有名词可保留英文）：
 - 开篇用一句强断言/原则句抓住注意力，而不是铺垫故事。
 - 多用短句与单句成段，节奏干净，像「写给自己的笔记」。
@@ -432,6 +451,7 @@ const ORAL_OUTPUT_FORMAT = `输出格式（严格遵守）：
 第一行：标题: （能停住的口播标题，有钩，不要说明书）
 第二行：摘要: （50字以内，说这期听什么）
 空一行后直接输出可念的口播正文，不要写「正文:」标签，不要小标题课，不要表格，不要 emoji。
+正文必须浅白、有活人感：口语、半句、长短不齐，像当面说，小学生听得懂；对谈则两人口气不一样。禁止播音腔完整句。
 不要写出「钩子/痛点/方案」「第一第二」「三个层面」这种栏目。结构只体现在越听越顺。
 篇幅以口播手为准（约 650–900 字），不要压成小红书短帖，也不要写成公众号长文。
 必须写完整并收束：最后把钩收回成一句能记住的判断。`;
@@ -457,7 +477,7 @@ ${FAMILY_INSTRUCTIONS.short_video}`;
 - 忽略本族总字数、小标题数量、emoji、行动号召、短剧总谱。
 - 篇幅只跟口播手：约 650–900 字。单人 8–12 段，对谈 10–14 轮。
 - 禁止压成社媒 150–400 字短帖，禁止写成 2000 字以上的课或长文。
-- 必须能直接念。本篇只走${extra.oralLabel}。`;
+- 必须能直接念，而且文案本身浅白、有活人感：口语、半句、口气像人，小学生听得懂。本篇只走${extra.oralLabel}。`;
   }
   if (kind === "social") {
     return `平台调性：只借「${tone}」的口气，不借长文/总谱篇幅。
@@ -518,9 +538,14 @@ export function buildCopywritingMessages(input: GenerateCopyInput) {
       : `${STYLE_INSTRUCTIONS[style]}${extraTone ? `\n额外语气补充：${extraTone}` : ""}`;
 
   const outline = input.kind === "script_outline";
-  const factLock = embedCorpusImages(input.kind)
-    ? `${CORPUS_FACT_LOCK}\n${CORPUS_IMAGE_LOCK}`
-    : `${CORPUS_FACT_LOCK}\n${CORPUS_NO_FAKE_IMAGES}`;
+  const factLock = [
+    embedCorpusImages(input.kind)
+      ? `${CORPUS_FACT_LOCK}\n${CORPUS_IMAGE_LOCK}`
+      : `${CORPUS_FACT_LOCK}\n${CORPUS_NO_FAKE_IMAGES}`,
+    outline ? "" : PLAIN_TALK,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   let system: string;
   if (outline) {
@@ -563,7 +588,7 @@ ${buildOralAgentInstruction(talk)}
 ${toneLine}
 
 ${factLock}
-本篇只许写成能直接念的${oralModeLabel(talk)}。禁止欢迎收听、大家好、功能清单、小标题科普。
+本篇只许写成能直接念、听着像活人的${oralModeLabel(talk)}。禁止欢迎收听、大家好、功能清单、小标题科普、提词器完整句。
 ${ORAL_OUTPUT_FORMAT}`;
   } else {
     system = `你是资深品牌文案顾问。先读语料，再按风格写。
@@ -630,75 +655,6 @@ ${buildCorpusContext(corpus, {
     corpus,
     family,
   };
-}
-
-export function parseCopyResponse(raw: string) {
-  const lines = raw.split("\n");
-  let title = "AI 生成文案";
-  let summary = "";
-  let scriptTitle = "";
-  let bodyStart = 0;
-  let bodyMarkdownPrefix = "";
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]?.trim() ?? "";
-    const titleMatch = line.match(/^标题[:：]\s*(.+)$/i);
-    const summaryMatch = line.match(/^摘要[:：]\s*(.+)$/i);
-    const scriptMatch = line.match(
-      /^(?:剧本名|合集名|短视频名|系列名)[:：]\s*(.+)$/i,
-    );
-    const bodyLabelOnly = /^正文[:：]\s*$/i.test(line);
-    const bodyLabelWithContent = line.match(/^正文[:：]\s*(.+)$/i);
-    if (titleMatch?.[1]) {
-      title = titleMatch[1].trim();
-      bodyStart = i + 1;
-      continue;
-    }
-    if (summaryMatch?.[1]) {
-      summary = summaryMatch[1].trim();
-      bodyStart = i + 1;
-      continue;
-    }
-    if (scriptMatch?.[1]) {
-      scriptTitle = scriptMatch[1].replace(/\s+/g, " ").trim().slice(0, 16);
-      bodyStart = i + 1;
-      continue;
-    }
-    if (bodyLabelOnly) {
-      bodyStart = i + 1;
-      continue;
-    }
-    if (bodyLabelWithContent?.[1]) {
-      bodyMarkdownPrefix = bodyLabelWithContent[1].trim();
-      bodyStart = i + 1;
-      continue;
-    }
-    if (title !== "AI 生成文案" && summary && scriptTitle && line === "") {
-      bodyStart = i + 1;
-      break;
-    }
-    if (title !== "AI 生成文案" && summary && line === "") {
-      bodyStart = i + 1;
-      break;
-    }
-  }
-
-  let bodyMarkdown = lines.slice(bodyStart).join("\n").trim();
-  if (bodyMarkdownPrefix) {
-    bodyMarkdown = bodyMarkdownPrefix + (bodyMarkdown ? `\n${bodyMarkdown}` : "");
-  }
-  bodyMarkdown = stripBodyLabel(bodyMarkdown);
-  bodyMarkdown = bodyMarkdown.replace(/^剧本名[:：]\s*.+\n*/m, "").trim();
-  if (!bodyMarkdown) {
-    bodyMarkdown = raw.trim();
-  }
-
-  if (title === "AI 生成文案") {
-    const h1 = bodyMarkdown.match(/^#\s+(.+)/m);
-    if (h1?.[1]) title = h1[1].trim();
-  }
-
-  return { title, summary, scriptTitle, bodyMarkdown };
 }
 
 export async function suggestScriptTitle(input: {
@@ -873,6 +829,7 @@ export async function* streamBrandCopy(
     type: "meta",
     usedCorpus,
     model,
+    phase: "write",
   };
 
   let thinking = "";
@@ -1010,6 +967,45 @@ export async function* streamBrandCopy(
       }
     }
 
+    if (copywritingNeedsHumanTalk(input.kind)) {
+      const reviewModel = activeHumanTalkModel();
+      yield {
+        type: "meta",
+        usedCorpus,
+        model: reviewModel,
+        phase: "review",
+      };
+      const gen = streamPolishHumanTalk({
+        kind: input.kind === "oral" ? "podcast" : "article",
+        text: content,
+        maxTokens,
+        signal: options?.signal,
+      });
+      let polished = {
+        text: content,
+        changed: false,
+        issues: [] as string[],
+        model: reviewModel,
+      };
+      while (true) {
+        const step = await gen.next();
+        if (step.done) {
+          polished = step.value;
+          break;
+        }
+        if (step.value.type === "status") {
+          yield { type: "status", message: step.value.message };
+        } else {
+          thinking += step.value.delta;
+          yield { type: "thinking", delta: step.value.delta };
+        }
+      }
+      if (polished.changed && polished.text.trim()) {
+        content = polished.text;
+        yield { type: "content", delta: content, replace: true };
+      }
+    }
+
     const result = stampScriptOutline(
       withOralStamp(
         await finalizeGeneratedCopy(content, corpus, thinking, input.kind),
@@ -1089,6 +1085,14 @@ export async function generateBrandCopy(
     model,
     maxTokens,
   });
+  if (copywritingNeedsHumanTalk(input.kind)) {
+    const polished = await polishHumanTalk({
+      kind: input.kind === "oral" ? "podcast" : "article",
+      text: raw,
+      maxTokens,
+    });
+    if (polished.changed && polished.text.trim()) raw = polished.text;
+  }
   return stampScriptOutline(
     withOralStamp(
       await finalizeGeneratedCopy(raw, corpus, undefined, input.kind),

@@ -7,6 +7,7 @@ import {
   countInfographicBlocks,
   extractInfographicImgs,
   insertInfographicsIntoHtml,
+  normalizeInfographicUrl,
   placementsFromInfographicRows,
 } from "@/lib/ai/infographic-insert";
 import { gatewayImageGenerate } from "@/lib/ai/gateway";
@@ -110,9 +111,16 @@ function persistInfographics(input: {
         ""
       : latest?.body || "";
   const sourceHtml = fromDb || input.bodyHtml;
+  const storedPlacements = placementsFromInfographicRows(stored);
+  const storedUrls = new Set(
+    storedPlacements.map((p) => normalizeInfographicUrl(p.url)).filter(Boolean),
+  );
   const nextBodyHtml = insertInfographicsIntoHtml(sourceHtml, [
-    ...placementsFromInfographicRows(stored),
-    ...placements,
+    ...storedPlacements,
+    ...placements.filter((p) => {
+      const url = normalizeInfographicUrl(p.url);
+      return Boolean(url) && !storedUrls.has(url);
+    }),
   ]);
   const synced: { family: PlatformFamily; label: string }[] = [];
 

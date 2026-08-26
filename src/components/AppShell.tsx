@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { APP_NAV_ADMIN, APP_NAV_GROUPS, MARKETING_NAV, navActive } from "@/lib/nav";
+import { APP_NAV_GROUPS, MARKETING_NAV, navActive } from "@/lib/nav";
 import { SITE_BRAND } from "@/lib/billing/plans";
 import { AuthBar } from "@/components/AuthBar";
 import { HomeWarmup } from "@/components/HomeWarmup";
@@ -39,7 +39,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 function AppFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { ready, registered, user } = useAuth();
+  const { ready, registered } = useAuth();
   const [open, setOpen] = useState(false);
   useEffect(() => {
     document.documentElement.classList.add("app-locked");
@@ -131,10 +131,7 @@ function AppFrame({ children }: { children: React.ReactNode }) {
           {SITE_BRAND}
         </Link>
         <nav className="app-sidebar__nav" aria-label="工作台">
-          {(user?.isAdmin
-            ? [...APP_NAV_GROUPS, APP_NAV_ADMIN]
-            : APP_NAV_GROUPS
-          ).map((group) => (
+          {APP_NAV_GROUPS.map((group) => (
             <div key={group.id} className="app-nav-group">
               <p className="app-nav-group__label">{group.label}</p>
               {group.items.map((link) => {

@@ -3,6 +3,7 @@ import { CLOUDFLARE_AI_MODEL_SEED } from "@/lib/ai/model-catalog/cloudflare-seed
 import { MUSIC_AI_MODEL_SEED } from "@/lib/ai/model-catalog/music-seed";
 import { PROXY_AI_MODEL_SEED } from "@/lib/ai/model-catalog/proxy-seed";
 import { QWEN_AI_MODEL_SEED } from "@/lib/ai/model-catalog/qwen-seed";
+import { CURSOR_AI_MODEL_SEED } from "@/lib/ai/model-catalog/cursor-seed";
 
 /** 直连通道 + 代理站精选 + 百炼千问 + 点悟 Suno + Workers AI。之后以 Admin 为准；migrate 会补种缺失 slug。 */
 export const DEFAULT_AI_MODEL_SEED: AiModelInput[] = [
@@ -12,7 +13,7 @@ export const DEFAULT_AI_MODEL_SEED: AiModelInput[] = [
     label: "DeepSeek 思考",
     hint: "写剧本默认。先想再写 JSON",
     modality: "text",
-    uses: ["script", "shot", "copywriting"],
+    uses: ["script", "shot", "copywriting", "review"],
     provider: "deepseek",
     providerModel: "deepseek-v4-pro",
     costHint: "约 ¥0.02/集",
@@ -25,13 +26,15 @@ export const DEFAULT_AI_MODEL_SEED: AiModelInput[] = [
     label: "DeepSeek 对话",
     hint: "更快，适合改一集",
     modality: "text",
-    uses: ["script", "shot", "copywriting"],
+    uses: ["script", "shot", "copywriting", "review"],
     provider: "deepseek",
     providerModel: "deepseek-v4-flash",
     costHint: "约 ¥0.01/集",
     sortOrder: 20,
     badges: ["recommended"],
   },
+  // —— 文本：Cursor API（Composer / Grok）——
+  ...CURSOR_AI_MODEL_SEED,
   // —— 文本 / 出图：openai-proxy 精选 ——
   ...PROXY_AI_MODEL_SEED,
   // —— 文本 / 出图：阿里云百炼千问 ——
@@ -42,7 +45,7 @@ export const DEFAULT_AI_MODEL_SEED: AiModelInput[] = [
     label: "豆包 Seed",
     hint: "国内延迟低，适合写稿",
     modality: "text",
-    uses: ["copywriting", "script"],
+    uses: ["copywriting", "script", "review"],
     provider: "doubao",
     providerModel: "doubao-seed-2-0-lite-260428",
     costHint: "国内",

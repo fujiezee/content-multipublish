@@ -1,5 +1,6 @@
 import { publishDouyinShortVideoViaExtension } from "./adapters/douyin-video.js";
 import { publishDouyinMusicViaExtension } from "./adapters/douyin-music.js";
+import { publishXiaoyuzhouPodcastViaExtension } from "./adapters/xiaoyuzhou.js";
 
 /** Open extension sync UI — popup window is reliable from web pages; toolbar openPopup needs a strict user gesture. */
 
@@ -190,6 +191,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     );
     return true;
   }
+  if (message.type === "PUBLISH_XIAOYUZHOU_PODCAST") {
+    replyAsync(
+      () => publishXiaoyuzhouPodcastViaExtension(message),
+      sendResponse,
+    );
+    return true;
+  }
   if (message.type !== "OPEN_ACTION_POPUP") return;
   replyAsync(() => handleOpenActionPopupMessage(message, sender), sendResponse);
   return true;
@@ -234,6 +242,13 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   if (message.type === "PUBLISH_DOUYIN_MUSIC") {
     replyAsync(
       () => publishDouyinMusicViaExtension(message),
+      sendResponse,
+    );
+    return true;
+  }
+  if (message.type === "PUBLISH_XIAOYUZHOU_PODCAST") {
+    replyAsync(
+      () => publishXiaoyuzhouPodcastViaExtension(message),
       sendResponse,
     );
     return true;

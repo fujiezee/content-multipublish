@@ -155,7 +155,7 @@ export function PlanPanel() {
               </Link>
               {isAdmin ? (
                 <Link href="/admin" className="btn btn-ghost">
-                  管理后台
+                  后台
                 </Link>
               ) : null}
             </div>

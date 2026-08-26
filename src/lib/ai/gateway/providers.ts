@@ -10,6 +10,11 @@ import {
   resolveQwenApiKey,
   resolveQwenOpenAiBase,
 } from "@/lib/ai/model-catalog/qwen-seed";
+import {
+  hasCursorApiReady,
+  resolveCursorApiKey,
+  resolveCursorOpenAiBase,
+} from "@/lib/ai/model-catalog/cursor-seed";
 import type { AiProviderChannel } from "@/lib/ai/model-catalog/types";
 
 function openAiBaseUrl() {
@@ -20,15 +25,11 @@ function hasOpenAiKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());
 }
 
-function hasAnthropicKey() {
-  return Boolean(process.env.ANTHROPIC_API_KEY?.trim());
-}
-
 function hasArkKey() {
   if (process.env.ARK_API_KEY?.trim() || resolveDoubaoEnvConfig()?.apiKey) {
     return true;
   }
-  // 与出图/出片一致：查排名页写入的方舟 Key 也算已配
+  // 历史上查排名页写过方舟 Key，仍当作已配
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getDoubaoStoredSecret } = require("@/lib/db") as {
@@ -61,12 +62,7 @@ export function providerChannelReady(channel: AiProviderChannel): boolean {
     case "gemini":
       return hasOpenAiKey();
     case "anthropic":
-      return (
-        hasAnthropicKey() ||
-        (hasOpenAiKey() &&
-          Boolean(openAiBaseUrl()) &&
-          !isOpenRouterBase())
-      );
+      return hasOpenAiKey() && Boolean(openAiBaseUrl());
     case "ark":
     case "doubao":
       return hasArkKey();
@@ -76,6 +72,8 @@ export function providerChannelReady(channel: AiProviderChannel): boolean {
       return hasSunoReady();
     case "cloudflare":
       return hasCloudflareAiReady();
+    case "cursor":
+      return hasCursorApiReady();
     default:
       return false;
   }
@@ -96,6 +94,12 @@ export function openAiCompatibleTransport(
     if (!apiKey || !base) return null;
     return { apiKey, baseUrl: base, label: "Cloudflare Workers AI" };
   }
+  if (channel === "cursor") {
+    const apiKey = resolveCursorApiKey();
+    const base = resolveCursorOpenAiBase();
+    if (!apiKey || !base) return null;
+    return { apiKey, baseUrl: base, label: "Cursor API" };
+  }
 
   const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
   if (!apiKey) return null;
@@ -113,8 +117,6 @@ export function openAiCompatibleTransport(
   }
   if (channel === "gemini" || channel === "anthropic") {
     const base = openAiBaseUrl() || "https://api.openai-proxy.org/v1";
-    // anthropic：有原生 Key 时不走代理 transport（由 script-llm 直连）
-    if (channel === "anthropic" && hasAnthropicKey()) return null;
     return {
       apiKey,
       baseUrl: base.endsWith("/v1") ? base : `${base}/v1`,
@@ -141,17 +143,19 @@ export function providerChannelHint(channel: AiProviderChannel): string {
     case "gemini":
       return "OPENAI_API_KEY + OPENAI_BASE_URL（openai-proxy）";
     case "anthropic":
-      return "ANTHROPIC_API_KEY，或 OPENAI_API_KEY 走代理站 Claude";
+      return "OPENAI_API_KEY + OPENAI_BASE_URL（代理站 Claude）";
     case "ark":
-      return "ARK_API_KEY，或在查排名页填火山方舟 Key";
+      return "ARK_API_KEY";
     case "doubao":
-      return "ARK_API_KEY / 查排名页方舟 Key";
+      return "ARK_API_KEY";
     case "qwen":
       return "DASHSCOPE_API_KEY + QWEN_BASE_URL（…/compatible-mode/v1）";
     case "suno":
       return "SUNO_API_KEY（sunoapi.org），或 SUNO_PROVIDER=gcui + SUNO_API_URL";
     case "cloudflare":
       return "CLOUDFLARE_AI_TOKEN（或 CLOUDFLARE_API_TOKEN）+ CLOUDFLARE_ACCOUNT_ID";
+    case "cursor":
+      return "CURSOR_API_KEY（Dashboard → API Keys），可选 CURSOR_BASE_URL";
     default:
       return "未配置";
   }

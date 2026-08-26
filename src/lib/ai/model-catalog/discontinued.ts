@@ -54,7 +54,7 @@ export function isHardRetiredModelId(id: string): boolean {
 /** 同步拉取时是否跳过该上游 id */
 export function shouldSkipSyncImport(
   id: string,
-  source: "ark" | "proxy" | "qwen" | "cloudflare",
+  source: "ark" | "proxy" | "qwen" | "cloudflare" | "cursor",
 ): boolean {
   if (!id.trim()) return true;
   if (isHardRetiredModelId(id)) return true;

@@ -59,7 +59,7 @@ export async function generateArkImage(input: {
   }
   const config = resolveArkVideoConfig();
   if (!config) {
-    throw new Error("还没配方舟。先填火山方舟 API Key，才能用 Seedream 出图");
+    throw new Error("还没配方舟。请设置 ARK_API_KEY");
   }
 
   const images = (input.references || [])

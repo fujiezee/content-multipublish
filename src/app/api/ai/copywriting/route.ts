@@ -9,6 +9,10 @@ import {
 import { persistCloudflareDb } from "@/lib/db/cloudflare-sql";
 import { streamBrandCopy, listCopywritingModelOptions } from "@/lib/ai/copywriting";
 import {
+  listHumanTalkModelOptions,
+  withHumanTalk,
+} from "@/lib/ai/human-talk-agent";
+import {
   defaultFamilyForKind,
   isPlatformFamily,
 } from "@/lib/content/platform-families";
@@ -101,6 +105,12 @@ function parseBody(body: unknown) {
         ? "dialogue"
         : "solo"
       : undefined;
+  const reviewModel =
+    typeof record.reviewModel === "string"
+      ? record.reviewModel.trim()
+      : typeof record.reviewModelSlug === "string"
+        ? record.reviewModelSlug.trim()
+        : "";
   return {
     brief,
     kind,
@@ -116,13 +126,17 @@ function parseBody(body: unknown) {
     modelSlug,
     marketingAngle,
     oralMode,
+    reviewModel,
   };
 }
 
 export async function GET(req: Request) {
   const auth = await requireApiUser(req);
   if (!auth.ok) return auth.response;
-  return Response.json({ models: listCopywritingModelOptions() });
+  return Response.json({
+    models: listCopywritingModelOptions(),
+    reviewModels: listHumanTalkModelOptions(),
+  });
 }
 
 function saveGeneratedArticle(
@@ -179,6 +193,7 @@ export async function POST(req: Request) {
     modelSlug,
     marketingAngle,
     oralMode,
+    reviewModel,
   } = parseBody(body);
 
   if (!brief && kind !== "marketing" && kind !== "oral") {
@@ -209,19 +224,21 @@ export async function POST(req: Request) {
   if (!stream) {
     const { generateBrandCopy } = await import("@/lib/ai/copywriting");
     try {
-      const result = await generateBrandCopy({
-        kind,
-        brief,
-        style,
-        tone,
-        categories,
-        corpusIds,
-        family,
-        writerAgent,
-        modelSlug: modelSlug || undefined,
-        marketingAngle,
-        oralMode,
-      });
+      const result = await withHumanTalk(auth.ctx.workspaceId, reviewModel, () =>
+        generateBrandCopy({
+          kind,
+          brief,
+          style,
+          tone,
+          categories,
+          corpusIds,
+          family,
+          writerAgent,
+          modelSlug: modelSlug || undefined,
+          marketingAngle,
+          oralMode,
+        }),
+      );
       if (saveAsArticle) {
         const article = saveGeneratedArticle(
           result,
@@ -251,27 +268,29 @@ export async function POST(req: Request) {
       };
 
       try {
-        for await (const event of streamBrandCopy(
-          { kind, brief, style, tone, categories, corpusIds, family, writerAgent, modelSlug: modelSlug || undefined, marketingAngle, oralMode },
-          { signal: abort.signal },
-        )) {
-          if (event.type === "done" && saveAsArticle) {
-            const article = saveGeneratedArticle(
-              event.result,
-              geoKeywordId,
-              brief,
-              family,
-              auth.ctx.workspaceId,
-            );
-            send({ type: "done", result: event.result, article, family });
-            continue;
+        await withHumanTalk(auth.ctx.workspaceId, reviewModel, async () => {
+          for await (const event of streamBrandCopy(
+            { kind, brief, style, tone, categories, corpusIds, family, writerAgent, modelSlug: modelSlug || undefined, marketingAngle, oralMode },
+            { signal: abort.signal },
+          )) {
+            if (event.type === "done" && saveAsArticle) {
+              const article = saveGeneratedArticle(
+                event.result,
+                geoKeywordId,
+                brief,
+                family,
+                auth.ctx.workspaceId,
+              );
+              send({ type: "done", result: event.result, article, family });
+              continue;
+            }
+            send(event);
+            if (event.type === "error") {
+              if (saveAsArticle) refundQuota(auth.ctx.workspaceId, "articles", 1, null, auth.ctx.email);
+              break;
+            }
           }
-          send(event);
-          if (event.type === "error") {
-            if (saveAsArticle) refundQuota(auth.ctx.workspaceId, "articles", 1, null, auth.ctx.email);
-            break;
-          }
-        }
+        });
       } catch (err) {
         if (saveAsArticle) refundQuota(auth.ctx.workspaceId, "articles", 1, null, auth.ctx.email);
         const message = err instanceof Error ? err.message : String(err);

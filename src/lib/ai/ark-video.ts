@@ -511,7 +511,7 @@ async function runProviderClip(
   }
   if (!config) {
     throw new Error(
-      "还没配方舟。在查排名页填入火山方舟 API Key，或在 .env.local 设置 ARK_API_KEY",
+      "还没配方舟。请设置 ARK_API_KEY",
     );
   }
   const taskId = await createTask(config, preset, content, duration);
@@ -1389,7 +1389,7 @@ export async function generateArkEpisodeVideo(
     }
   } else if (!config) {
     throw new Error(
-      "还没配方舟。在查排名页填入火山方舟 API Key，或在 .env.local 设置 ARK_API_KEY",
+      "还没配方舟。请设置 ARK_API_KEY",
     );
   }
   const useLipSync = preset.generateAudio;

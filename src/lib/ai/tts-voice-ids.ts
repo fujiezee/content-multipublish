@@ -30,7 +30,7 @@ export const TTS_SPEECH_MODELS: TtsSpeechModelOption[] = [
   {
     id: "seed-tts-2.0-expressive",
     label: "豆包 2.0 表现力",
-    hint: "对谈更有情绪，声线可能偏一点",
+    hint: "每句带心情。声线可能偏一点",
     provider: "ark",
   },
   {

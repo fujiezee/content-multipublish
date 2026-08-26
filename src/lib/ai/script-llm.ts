@@ -81,10 +81,6 @@ function hasOpenAiKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());
 }
 
-function hasAnthropicKey() {
-  return Boolean(process.env.ANTHROPIC_API_KEY?.trim());
-}
-
 function openaiBaseUrl() {
   return (process.env.OPENAI_BASE_URL?.trim() || "https://api.openai.com/v1").replace(
     /\/$/,
@@ -92,22 +88,13 @@ function openaiBaseUrl() {
   );
 }
 
-function isOpenAiCompatibleProxy() {
-  const base = openaiBaseUrl();
-  return /proxy|openrouter|siliconflow|together|dashscope/i.test(base);
-}
-
 export function scriptLlmConfigured(option: ScriptLlmOption): boolean {
   if (option.provider === "deepseek") return hasDeepSeekKey();
-  if (option.provider === "openai" || option.provider === "proxy") {
-    return hasOpenAiKey();
-  }
-  return hasAnthropicKey() || (hasOpenAiKey() && isOpenAiCompatibleProxy());
+  return hasOpenAiKey();
 }
 
 function catalogProviderToScript(p: AiProviderChannel): ScriptLlmProvider {
   if (p === "deepseek") return "deepseek";
-  if (p === "anthropic") return "anthropic";
   return "proxy";
 }
 
@@ -302,13 +289,8 @@ function optionOrThrow(id: string) {
   }
   const option = scriptLlmMeta(id);
   if (!scriptLlmConfigured(option)) {
-    if (option.provider === "openai" || option.provider === "proxy") {
+    if (option.provider === "openai" || option.provider === "proxy" || option.provider === "anthropic") {
       throw new Error("还没配代理 Key。在 .env.local 写 OPENAI_API_KEY");
-    }
-    if (option.provider === "anthropic") {
-      throw new Error(
-        "还没配 Claude。在 .env.local 写 ANTHROPIC_API_KEY，或用已支持 Claude 的 OPENAI_BASE_URL 代理",
-      );
     }
     throw new Error("还没配 DeepSeek。在 .env.local 写 DEEPSEEK_API_KEY");
   }
@@ -418,101 +400,6 @@ async function* streamOpenAiCompatible(
   }
 }
 
-async function* streamAnthropic(
-  messages: { role: "system" | "user" | "assistant"; content: string }[],
-  options: {
-    model: string;
-    temperature?: number;
-    maxTokens?: number;
-    timeoutMs?: number;
-  },
-): AsyncGenerator<StreamChunk> {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim() || "";
-  const system = messages
-    .filter((m) => m.role === "system")
-    .map((m) => m.content)
-    .join("\n\n");
-  const chat = messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-  const controller = new AbortController();
-  const timeoutMs = options.timeoutMs ?? 180_000;
-  let timer = setTimeout(() => controller.abort(), timeoutMs);
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(), timeoutMs);
-  };
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: options.model,
-        max_tokens: options.maxTokens ?? 8192,
-        system: system || undefined,
-        messages: chat,
-        stream: true,
-        ...(omitsTemperature(options.model)
-          ? {}
-          : { temperature: options.temperature ?? 0.55 }),
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const raw = await res.text();
-      throw new Error(`Claude ${res.status}: ${raw.slice(0, 280)}`);
-    }
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error("Claude 流式响应不可用");
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      arm();
-      buffer += decoder.decode(value, { stream: true });
-      while (true) {
-        const lineEnd = buffer.indexOf("\n");
-        if (lineEnd < 0) break;
-        const line = buffer.slice(0, lineEnd).trim();
-        buffer = buffer.slice(lineEnd + 1);
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data) continue;
-        let json: {
-          type?: string;
-          delta?: { type?: string; text?: string; thinking?: string };
-        };
-        try {
-          json = JSON.parse(data) as typeof json;
-        } catch {
-          continue;
-        }
-        if (json.type === "content_block_delta" && json.delta?.text) {
-          yield { type: "content", text: json.delta.text };
-        }
-        if (json.delta?.thinking) {
-          yield { type: "thinking", text: json.delta.thinking };
-        }
-        if (json.type === "message_stop") {
-          yield { type: "finish", reason: "stop" };
-        }
-      }
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error("已取消生成");
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function* streamScriptLlm(
   messages: { role: "system" | "user" | "assistant"; content: string }[],
   options?: ScriptLlmCallOptions,
@@ -538,7 +425,7 @@ export async function* streamScriptLlm(
     return;
   }
 
-  if (catalog && catalog.provider !== "anthropic") {
+  if (catalog && catalog.provider !== "deepseek") {
     const transport = openAiCompatibleTransport(catalog.provider);
     if (transport) {
       yield* streamOpenAiCompatible(messages, {
@@ -564,15 +451,6 @@ export async function* streamScriptLlm(
       timeoutMs: options?.timeoutMs,
       signal: options?.signal,
       ...thinkCallOpts(think),
-    });
-    return;
-  }
-  if (option.provider === "anthropic" && hasAnthropicKey()) {
-    yield* streamAnthropic(messages, {
-      model: option.id,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      timeoutMs: options?.timeoutMs,
     });
     return;
   }
@@ -613,7 +491,7 @@ export async function completeScriptLlm(
     });
   }
 
-  if (catalog && catalog.provider !== "anthropic") {
+  if (catalog && catalog.provider !== "deepseek") {
     const transport = openAiCompatibleTransport(catalog.provider);
     if (transport) {
       let text = "";
@@ -645,19 +523,6 @@ export async function completeScriptLlm(
     });
   }
 
-  if (option.provider === "anthropic" && hasAnthropicKey()) {
-    let text = "";
-    for await (const chunk of streamAnthropic(messages, {
-      model: option.id,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      timeoutMs: options?.timeoutMs,
-    })) {
-      if (chunk.type === "content") text += chunk.text;
-    }
-    if (!text.trim()) throw new Error(`${option.label} 返回空内容`);
-    return text;
-  }
   const apiKey = process.env.OPENAI_API_KEY?.trim() || "";
   let text = "";
   for await (const chunk of streamOpenAiCompatible(messages, {

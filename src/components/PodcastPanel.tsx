@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { HumanTalkRevise } from "@/components/HumanTalkRevise";
 import { ModelPicker, type ModelPickerItem } from "@/components/ModelPicker";
 import { PodcastListen } from "@/components/PodcastListen";
 import { VoicePreviewButton } from "@/components/VoicePreviewButton";
@@ -57,11 +58,13 @@ export function PodcastPanel({ articleId, title }: Props) {
   const [podcast, setPodcast] = useState<PodcastView | null>(null);
   const [voices, setVoices] = useState<VoiceSelectOption[]>([]);
   const [models, setModels] = useState<ModelPickerItem[]>([]);
+  const [reviewModels, setReviewModels] = useState<ModelPickerItem[]>([]);
   const [ttsModels, setTtsModels] = useState<ModelPickerItem[]>([]);
   const [mode, setMode] = useState<PodcastMode>("dialogue");
   const [hostVoice, setHostVoice] = useState(DEFAULT_PODCAST_HOST_VOICE);
   const [guestVoice, setGuestVoice] = useState(DEFAULT_PODCAST_GUEST_VOICE);
   const [modelId, setModelId] = useState("deepseek-reasoner");
+  const [reviewModel, setReviewModel] = useState("deepseek-chat");
   const [ttsModel, setTtsModel] = useState(DEFAULT_PODCAST_TTS_MODEL);
   const [busy, setBusy] = useState(false);
   const [covering, setCovering] = useState(false);
@@ -83,6 +86,7 @@ export function PodcastPanel({ articleId, title }: Props) {
           podcast?: PodcastView | null;
           voices?: VoiceSelectOption[];
           scriptModels?: ModelPickerItem[];
+          reviewModels?: ModelPickerItem[];
           ttsModels?: ModelPickerItem[];
           defaults?: {
             hostVoice?: string;
@@ -97,6 +101,25 @@ export function PodcastPanel({ articleId, title }: Props) {
           setModels(data.scriptModels);
           const ready = data.scriptModels.find((m) => m.ready !== false);
           if (ready?.id) setModelId(ready.id);
+        }
+        const reviews = data.reviewModels?.length
+          ? data.reviewModels
+          : data.scriptModels || [];
+        if (reviews.length) {
+          setReviewModels(reviews);
+          let savedReview = "";
+          try {
+            savedReview = localStorage.getItem("dwgeo-review-model") || "";
+          } catch {
+            savedReview = "";
+          }
+          const picked =
+            (savedReview &&
+              reviews.find((m) => m.id === savedReview && m.ready !== false)?.id) ||
+            reviews.find((m) => m.id === "deepseek-chat" && m.ready !== false)?.id ||
+            reviews.find((m) => m.ready !== false)?.id ||
+            reviews[0]?.id;
+          if (picked) setReviewModel(picked);
         }
         if (data.ttsModels?.length) {
           setTtsModels(data.ttsModels);
@@ -123,7 +146,11 @@ export function PodcastPanel({ articleId, title }: Props) {
             setError(data.podcast.error);
           }
           if (data.podcast.status === "pending") {
-            setStatus("上次生成可能中断了，再点一次");
+            setStatus(
+              (data.podcast.turns || []).length
+                ? "上次配音可能中断了，改完再点确认配音"
+                : "上次写稿可能中断了，再点一次",
+            );
           }
         } else {
           if (data.defaults?.hostVoice) setHostVoice(data.defaults.hostVoice);
@@ -148,10 +175,12 @@ export function PodcastPanel({ articleId, title }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          stage: "script",
           mode,
           hostVoice,
           guestVoice,
           model: modelId,
+          reviewModel,
           ttsModel,
         }),
       });
@@ -171,7 +200,15 @@ export function PodcastPanel({ articleId, title }: Props) {
           gotDone = true;
           const next = event.podcast as PodcastView;
           setPodcast(next);
-          setStatus(next.coverUrl ? "播客已生成" : "播客已生成，封面没出成");
+          setStatus(
+            next.status === "draft"
+              ? next.mode === "solo"
+                ? "口播已写好，先改到你点头再配音"
+                : "对谈已写好，先改到你点头再配音"
+              : next.coverUrl
+                ? "播客已生成"
+                : "播客已生成，封面没出成",
+          );
         }
       });
       if (!gotDone) throw new Error("生成中断，请再试一次");
@@ -181,6 +218,110 @@ export function PodcastPanel({ articleId, title }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function speak() {
+    if (busy || covering) return;
+    setBusy(true);
+    setError(null);
+    setStatus(mode === "solo" ? "开始按情绪配音…" : "开始按情绪配音…");
+    try {
+      const res = await fetch(`/api/articles/${articleId}/podcast`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stage: "speak",
+          hostVoice,
+          guestVoice,
+          ttsModel,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "配音失败");
+      }
+      let gotDone = false;
+      await readNdjsonEvents(res.body, (event) => {
+        if (event.type === "progress" && typeof event.message === "string") {
+          setStatus(event.message);
+        } else if (event.type === "error") {
+          throw new Error(
+            typeof event.error === "string" ? event.error : "配音失败",
+          );
+        } else if (event.type === "done" && event.podcast) {
+          gotDone = true;
+          const next = event.podcast as PodcastView;
+          setPodcast(next);
+          setStatus(next.coverUrl ? "播客已生成" : "播客已生成，封面没出成");
+        }
+      });
+      if (!gotDone) throw new Error("配音中断，请再试一次");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "配音失败");
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyRevisedScript(raw: string) {
+    if (!podcast) return;
+    let nextTurns = podcast.turns;
+    let nextTitle = podcast.title;
+    try {
+      const json = JSON.parse(raw) as {
+        title?: unknown;
+        turns?: Array<{ speaker?: unknown; text?: unknown; feel?: unknown }>;
+      };
+      if (typeof json.title === "string" && json.title.trim()) {
+        nextTitle = json.title.trim().slice(0, 24);
+      }
+      if (Array.isArray(json.turns) && json.turns.length) {
+        nextTurns = json.turns
+          .map((row, index) => {
+            const speaker = row.speaker === "guest" ? ("guest" as const) : ("host" as const);
+            const text = String(row.text || "").trim();
+            if (!text) return null;
+            const prev = podcast.turns[index];
+            return {
+              index: index + 1,
+              speaker,
+              name:
+                podcast.mode === "solo"
+                  ? "口播"
+                  : speaker === "guest"
+                    ? "答"
+                    : "问",
+              text,
+              feel: String(row.feel || prev?.feel || "").trim(),
+              audioUrl: "",
+              durationSec: 0,
+            };
+          })
+          .filter((row): row is NonNullable<typeof row> => Boolean(row));
+      }
+    } catch {
+      throw new Error("改稿格式不对，再试一次");
+    }
+    if (!nextTurns.length) return;
+    const res = await fetch(`/api/articles/${articleId}/podcast`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: nextTitle,
+        turns: nextTurns.map((turn) => ({
+          speaker: turn.speaker,
+          text: turn.text,
+          feel: turn.feel,
+        })),
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      podcast?: PodcastView;
+      error?: string;
+    };
+    if (!res.ok) throw new Error(data.error || "保存改稿失败");
+    if (data.podcast) setPodcast(data.podcast);
   }
 
   async function fillCover() {
@@ -211,7 +352,22 @@ export function PodcastPanel({ articleId, title }: Props) {
 
   const turns = podcast?.turns || [];
   const ready = podcast?.status === "ready" && turns.length > 0;
+  const draft = podcast?.status === "draft" && turns.length > 0;
   const shortTitle = title.trim().slice(0, 16);
+  const draftText = podcast
+    ? JSON.stringify(
+        {
+          title: podcast.title,
+          turns: turns.map((turn) => ({
+            speaker: turn.speaker,
+            text: turn.text,
+            feel: turn.feel || "",
+          })),
+        },
+        null,
+        2,
+      )
+    : "";
 
   return (
     <div className="space-y-3">
@@ -220,20 +376,20 @@ export function PodcastPanel({ articleId, title }: Props) {
         <h2>
           {oralReady
             ? oralReady.mode === "solo"
-              ? `「${shortTitle || "这篇"}」已是单人口播，生成时直接配音`
-              : `「${shortTitle || "这篇"}」已是双人对谈，生成时直接配音`
+              ? `「${shortTitle || "这篇"}」已经写好口播了，先过一遍再配音`
+              : `「${shortTitle || "这篇"}」已经写好对谈了，先过一遍再配音`
             : shortTitle
-              ? `把「${shortTitle}」改成能听下去的口播`
-              : "把这篇改成能听下去的口播"}
+              ? `把「${shortTitle}」变成能听的`
+              : "把这篇变成能听的"}
         </h2>
         <p>
           {oralReady
             ? oralReady.mode === "solo"
-              ? "写作里选的单人口播已经定好了，不再重写成对谈。点生成只配音、出封面。"
-              : "写作里选的双人对谈已经定好了，不再重写成单人口播。点生成只配音、出封面。"
+              ? "写作里已经定成单人说。先改到你点头，再配音、出封面。"
+              : "写作里已经定成两个人聊。先改到你点头，再配音、出封面。"
             : mode === "solo"
-              ? "单人吸引力口播：第一句停住，每段只揭一层、结尾钩住下一段。说话要有情绪，不是念稿。"
-              : "双人对谈：主持是听的人在追问，嘉宾每次只揭一层、话尾再钩。两个人都要有口气，不是采访提纲。"}
+              ? "一个人说。话要浅，小学生也听得懂。写完先改，点头再配音。"
+              : "两个人聊。话要浅，小学生也听得懂。写完先改，点头再配音。"}
         </p>
       </header>
       <div id="podcast" className="card scroll-mt-24 space-y-4 p-5">
@@ -314,13 +470,41 @@ export function PodcastPanel({ articleId, title }: Props) {
               />
             </label>
           ) : null}
+          {reviewModels.length > 0 ? (
+            <label className="podcast-toolbar__voice">
+              <span>人话审核</span>
+              <ModelPicker
+                value={reviewModel}
+                items={reviewModels}
+                disabled={busy || covering}
+                title="人话审核的模型"
+                placeholder="人话审核"
+                onChange={(next) => {
+                  setReviewModel(next);
+                  try {
+                    localStorage.setItem("dwgeo-review-model", next);
+                  } catch {
+                    // ignore
+                  }
+                }}
+              />
+            </label>
+          ) : null}
           <button
             type="button"
             className="btn btn-primary"
             disabled={busy || covering}
             onClick={() => void generate()}
           >
-            {busy ? "生成中…" : ready ? "再生成" : "生成播客"}
+            {busy
+              ? "生成中…"
+              : ready || draft
+                ? mode === "solo"
+                  ? "重写口播"
+                  : "重写对谈"
+                : mode === "solo"
+                  ? "写口播"
+                  : "写对谈"}
           </button>
           {ready && podcast && !podcast.coverUrl ? (
             <button
@@ -341,9 +525,40 @@ export function PodcastPanel({ articleId, title }: Props) {
         ) : null}
         {ready && podcast ? (
           <PodcastListen podcast={podcast} />
+        ) : draft && podcast ? (
+          <div className="space-y-3">
+            <ol className="space-y-2 text-sm">
+              {turns.map((turn) => (
+                <li
+                  key={turn.index}
+                  className="rounded-lg border border-[var(--line)] px-3 py-2"
+                >
+                  <span className="mr-2 font-medium">
+                    {turn.name || (turn.speaker === "guest" ? "答" : "问")}
+                  </span>
+                  <span>{turn.text}</span>
+                  {turn.feel ? (
+                    <span className="ml-2 text-xs text-[var(--muted)]">
+                      {turn.feel}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+            <HumanTalkRevise
+              kind="podcast"
+              text={draftText}
+              reviewModel={reviewModel}
+              disabled={busy || covering}
+              confirming={busy}
+              confirmLabel="确认，开始配音"
+              onText={(next) => applyRevisedScript(next)}
+              onConfirm={() => speak()}
+            />
+          </div>
         ) : (
           <p className="text-sm text-[var(--muted)]">
-            写完正文后点生成。单人口播和双人对谈用两套写法，都是连环钩，听的人想划走也划不掉。判断仍来自正文。
+            写完正文后点写对谈。先改到你点头，再配音。
           </p>
         )}
       </div>

@@ -29,11 +29,14 @@ import {
   type VideoCharacterPhoto,
   type VideoPublishJob,
   type MusicPublishJob,
+  type PodcastPublishJob,
   type ArticleVariant,
   type VideoEpisodeStatus,
   type VideoScriptGenre,
   type CorpusItem,
   type WriterAgent,
+  type HumanTalkRule,
+  type HumanTalkExample,
   type GeoKeyword,
   type GeoKeywordArticle,
   type GeoKeywordArticleWithTitle,
@@ -77,6 +80,7 @@ import {
   syncQwenModelsIntoCatalog,
   syncArkModelsIntoCatalog,
   syncCloudflareModelsIntoCatalog,
+  syncCursorModelsIntoCatalog,
   syncOfficialPricingIntoCatalog,
   updateCatalogModel,
 } from "@/lib/ai/model-catalog/index";
@@ -248,8 +252,10 @@ function migrate(database: Database.Database) {
   migrateAgentDevices(database);
   migrateVideoPublishJobs(database);
   migrateMusicPublishJobs(database);
+  migratePodcastPublishJobs(database);
   migrateCorpusAssets(database);
   migrateWriterAgents(database);
+  migrateHumanTalkMemory(database);
   migrateAiModelCatalog(database);
   if (countAiModels(database) === 0) {
     for (const item of DEFAULT_AI_MODEL_SEED) {
@@ -865,6 +871,183 @@ export function updateWriterAgent(
 
 export function deleteWriterAgent(id: string) {
   getDb().prepare("DELETE FROM writer_agents WHERE id = ?").run(id);
+}
+
+function migrateHumanTalkMemory(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS human_talk_rules (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        rule TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        hit_count INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_human_talk_rules_ws
+        ON human_talk_rules(workspace_id, updated_at);
+      CREATE TABLE IF NOT EXISTS human_talk_examples (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        before_text TEXT NOT NULL,
+        after_text TEXT NOT NULL,
+        rule TEXT NOT NULL DEFAULT '',
+        user_note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_human_talk_examples_ws
+        ON human_talk_examples(workspace_id, created_at);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate human talk memory:", err);
+  }
+}
+
+export function listHumanTalkRules(workspaceId: string): HumanTalkRule[] {
+  try {
+    return getDb()
+      .prepare(
+        `SELECT * FROM human_talk_rules
+         WHERE workspace_id = ?
+         ORDER BY hit_count DESC, updated_at DESC`,
+      )
+      .all(workspaceId) as HumanTalkRule[];
+  } catch {
+    return [];
+  }
+}
+
+export function listEnabledHumanTalkRules(workspaceId: string): HumanTalkRule[] {
+  return listHumanTalkRules(workspaceId).filter((row) => row.enabled);
+}
+
+export function listHumanTalkExamples(
+  workspaceId: string,
+  limit = 8,
+): HumanTalkExample[] {
+  try {
+    return getDb()
+      .prepare(
+        `SELECT * FROM human_talk_examples
+         WHERE workspace_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(workspaceId, limit) as HumanTalkExample[];
+  } catch {
+    return [];
+  }
+}
+
+export function upsertHumanTalkRule(
+  workspaceId: string,
+  rule: string,
+): HumanTalkRule | null {
+  const text = rule.replace(/\s+/g, " ").trim().slice(0, 80);
+  if (text.length < 8) return null;
+  const now = new Date().toISOString();
+  const rows = listHumanTalkRules(workspaceId);
+  const key = text.replace(/[。．.！!？?，,、]/g, "");
+  const existing = rows.find((row) => {
+    const other = row.rule
+      .replace(/\s+/g, " ")
+      .replace(/[。．.！!？?，,、]/g, "");
+    return other === key || other.includes(key) || key.includes(other);
+  });
+  if (existing) {
+    const next: HumanTalkRule = {
+      ...existing,
+      rule: existing.rule.length >= text.length ? existing.rule : text,
+      hit_count: existing.hit_count + 1,
+      enabled: 1,
+      updated_at: now,
+    };
+    getDb()
+      .prepare(
+        `UPDATE human_talk_rules
+         SET rule = @rule, hit_count = @hit_count, enabled = 1, updated_at = @updated_at
+         WHERE id = @id`,
+      )
+      .run(next);
+    return next;
+  }
+  const enabledCount = rows.filter((row) => row.enabled).length;
+  if (enabledCount >= 24) {
+    const oldest = [...rows]
+      .filter((row) => row.enabled)
+      .sort((a, b) => a.updated_at.localeCompare(b.updated_at))[0];
+    if (oldest) {
+      getDb()
+        .prepare(
+          `UPDATE human_talk_rules SET enabled = 0, updated_at = ? WHERE id = ?`,
+        )
+        .run(now, oldest.id);
+    }
+  }
+  const item: HumanTalkRule = {
+    id: randomUUID(),
+    workspace_id: workspaceId,
+    rule: text,
+    enabled: 1,
+    hit_count: 1,
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO human_talk_rules
+       (id, workspace_id, rule, enabled, hit_count, created_at, updated_at)
+       VALUES (@id, @workspace_id, @rule, @enabled, @hit_count, @created_at, @updated_at)`,
+    )
+    .run(item);
+  return item;
+}
+
+export function setHumanTalkRuleEnabled(
+  id: string,
+  workspaceId: string,
+  enabled: boolean,
+): HumanTalkRule | null {
+  const row = listHumanTalkRules(workspaceId).find((item) => item.id === id);
+  if (!row) return null;
+  const next: HumanTalkRule = {
+    ...row,
+    enabled: enabled ? 1 : 0,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE human_talk_rules SET enabled = @enabled, updated_at = @updated_at WHERE id = @id`,
+    )
+    .run(next);
+  return next;
+}
+
+export function insertHumanTalkExample(row: HumanTalkExample): HumanTalkExample {
+  getDb()
+    .prepare(
+      `INSERT INTO human_talk_examples
+       (id, workspace_id, kind, before_text, after_text, rule, user_note, created_at)
+       VALUES (@id, @workspace_id, @kind, @before_text, @after_text, @rule, @user_note, @created_at)`,
+    )
+    .run(row);
+  try {
+    const extras = getDb()
+      .prepare(
+        `SELECT id FROM human_talk_examples
+         WHERE workspace_id = ?
+         ORDER BY created_at DESC`,
+      )
+      .all(row.workspace_id) as { id: string }[];
+    for (const extra of extras.slice(80)) {
+      getDb().prepare(`DELETE FROM human_talk_examples WHERE id = ?`).run(extra.id);
+    }
+  } catch {
+    // ignore prune
+  }
+  return row;
 }
 
 export function listGeoMines(
@@ -1827,6 +2010,32 @@ function migrateMusicPublishJobs(database: Database.Database) {
     `);
   } catch (err) {
     console.warn("[db] migrate music publish jobs:", err);
+  }
+}
+
+function migratePodcastPublishJobs(database: Database.Database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS podcast_publish_jobs (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL,
+        podcast_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        result_url TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+        FOREIGN KEY (podcast_id) REFERENCES article_podcasts(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_podcast_publish_jobs_created
+        ON podcast_publish_jobs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_podcast_publish_jobs_article
+        ON podcast_publish_jobs(article_id);
+    `);
+  } catch (err) {
+    console.warn("[db] migrate podcast publish jobs:", err);
   }
 }
 
@@ -4456,6 +4665,97 @@ export function listMusicPublishJobs(
     .all(workspaceId, limit) as MusicPublishJob[];
 }
 
+export function createPodcastPublishJob(input: {
+  articleId: string;
+  podcastId: string;
+  platform: string;
+}): PodcastPublishJob {
+  const now = new Date().toISOString();
+  const row: PodcastPublishJob = {
+    id: randomUUID(),
+    article_id: input.articleId,
+    podcast_id: input.podcastId,
+    platform: input.platform,
+    status: "running",
+    error: null,
+    result_url: null,
+    created_at: now,
+    updated_at: now,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO podcast_publish_jobs
+       (id, article_id, podcast_id, platform, status, error, result_url, created_at, updated_at)
+       VALUES (@id, @article_id, @podcast_id, @platform, @status, @error, @result_url, @created_at, @updated_at)`,
+    )
+    .run(row);
+  return row;
+}
+
+export function getPodcastPublishJob(id: string): PodcastPublishJob | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM podcast_publish_jobs WHERE id = ?`)
+    .get(id) as PodcastPublishJob | undefined;
+}
+
+export function updatePodcastPublishJob(
+  id: string,
+  patch: Partial<Pick<PodcastPublishJob, "status" | "error" | "result_url">>,
+): PodcastPublishJob | undefined {
+  const current = getDb()
+    .prepare(`SELECT * FROM podcast_publish_jobs WHERE id = ?`)
+    .get(id) as PodcastPublishJob | undefined;
+  if (!current) return undefined;
+  const next: PodcastPublishJob = {
+    ...current,
+    status: patch.status ?? current.status,
+    error: patch.error === undefined ? current.error : patch.error,
+    result_url:
+      patch.result_url === undefined ? current.result_url : patch.result_url,
+    updated_at: new Date().toISOString(),
+  };
+  getDb()
+    .prepare(
+      `UPDATE podcast_publish_jobs
+       SET status = @status, error = @error, result_url = @result_url, updated_at = @updated_at
+       WHERE id = @id`,
+    )
+    .run(next);
+  return next;
+}
+
+export function failRunningPodcastPublishJobs(
+  reason = "已改点重新发布",
+): void {
+  getDb()
+    .prepare(
+      `UPDATE podcast_publish_jobs
+       SET status = 'failed', error = ?, updated_at = ?
+       WHERE status IN ('pending', 'running')`,
+    )
+    .run(reason, new Date().toISOString());
+}
+
+export function listPodcastPublishJobs(
+  workspaceId: string,
+  limit = 40,
+): PodcastPublishJob[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         j.id, j.article_id, j.podcast_id, j.platform, j.status, j.error, j.result_url,
+         j.created_at, j.updated_at,
+         p.title AS podcast_title
+       FROM podcast_publish_jobs j
+       INNER JOIN article_podcasts p ON p.id = j.podcast_id
+       INNER JOIN articles a ON a.id = j.article_id
+       WHERE a.workspace_id = ? OR a.workspace_id IS NULL OR a.workspace_id = ''
+       ORDER BY j.created_at DESC
+       LIMIT ?`,
+    )
+    .all(workspaceId, limit) as PodcastPublishJob[];
+}
+
 function studioAsArticleCharacter(
   articleId: string,
   studio: StudioCharacter,
@@ -5523,6 +5823,10 @@ export async function syncArkAiModels() {
 
 export async function syncCloudflareAiModels() {
   return syncCloudflareModelsIntoCatalog(getDb());
+}
+
+export async function syncCursorAiModels() {
+  return syncCursorModelsIntoCatalog(getDb());
 }
 
 export function syncOfficialAiModelPricing() {

@@ -88,7 +88,7 @@ export async function generateEpisodeVideo(
 ): Promise<EpisodeVideoResult> {
   if (!videoGenConfigured()) {
     throw new Error(
-      "还没配方舟。在查排名页填入火山方舟 API Key，或在 .env.local 设置 ARK_API_KEY",
+      "还没配方舟。请设置 ARK_API_KEY",
     );
   }
   return generateArkEpisodeVideo(input, onProgress);

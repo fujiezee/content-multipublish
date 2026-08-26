@@ -19,6 +19,7 @@ const USES = new Set<AiModelUse>([
   "copywriting",
   "script",
   "shot",
+  "review",
   "infographic",
   "cover",
   "character",

@@ -216,7 +216,7 @@ function toInput(row: QwenSeed): AiModelInput {
       ? (["infographic", "cover"] as AiModelUse[])
       : modality === "audio"
         ? (["tts"] as AiModelUse[])
-        : (["script", "shot", "copywriting"] as AiModelUse[]));
+        : (["script", "shot", "copywriting", "review"] as AiModelUse[]));
   return {
     slug: `aliyun-${row.id}`,
     label: row.label,
@@ -295,7 +295,7 @@ export function qwenModelIdToInput(id: string): AiModelInput | null {
   if (known) return known;
 
   let modality: AiModality = "text";
-  let uses: AiModelUse[] = ["script", "shot", "copywriting"];
+  let uses: AiModelUse[] = ["script", "shot", "copywriting", "review"];
   if (/image|vl-|ocr|qvq/i.test(raw)) {
     modality = /vl-|ocr|qvq/i.test(raw) ? "text" : "image";
     uses =

@@ -232,6 +232,24 @@ export function AdminModelsPanel() {
     }
   }
 
+  async function syncCursor() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/admin/models/sync-cursor", {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "同步失败");
+      setMessage(data.message || "已同步");
+      await refresh(true);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "同步失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function syncPrices() {
     setBusy(true);
     setMessage(null);
@@ -345,6 +363,15 @@ export function AdminModelsPanel() {
             title="从百炼 MaaS compatible-mode/v1/models 拉取千问等模型"
           >
             同步千问
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={busy}
+            onClick={() => void syncCursor()}
+            title="从 Cursor API /v1/models 拉取 Composer / Grok 等"
+          >
+            同步 Cursor
           </button>
           <button
             type="button"

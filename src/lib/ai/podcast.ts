@@ -10,16 +10,19 @@ import { persistPublicAsset } from "@/lib/storage/public-media";
 import { articleMusicSource } from "@/lib/ai/video-music";
 import {
   detectOralCopy,
+  ORAL_ALIVE_VOICE,
   type DetectedOralCopy,
 } from "@/lib/ai/oral-copy-agent";
 import {
   DEFAULT_PODCAST_GUEST_VOICE,
   DEFAULT_PODCAST_HOST_VOICE,
   DEFAULT_PODCAST_TTS_MODEL,
+  podcastAudioEmotion,
   podcastSpeakerName,
   podcastTone,
+  wrapPodcastCot,
 } from "@/lib/ai/podcast-shared";
-import { ttsSpeechModelMeta } from "@/lib/ai/tts-voice-ids";
+import { isCustomVoiceId, ttsSpeechModelMeta } from "@/lib/ai/tts-voice-ids";
 import { listArticlePainKeywords } from "@/lib/db";
 import type {
   Article,
@@ -102,37 +105,43 @@ export function podcastCoverBrief(
 
 const PODCAST_SOLO_SYSTEM = `你把一篇 GEO 稿改写成「吸引力单人口播」音频稿。一个人对着听的人说，不是两个人聊天，不是电台开场，不是把文章念一遍。
 
-任务有两件，缺一不可：连环钩把人听下去；每一句都能听出情绪。平铺直叙的口播没人听。
+任务有三件，缺一不可：连环钩把人听下去；每一句都能听出情绪；文案本身有活人感，像当面跟熟人说，不是念提词器。
+
+${ORAL_ALIVE_VOICE}
 
 写法（吸引力口播）：
 - 黄金三秒：第一句就必须停住。任选一类钩：反常识判断、挑衅判决、听的人正在做的错法、不做的代价。禁止自我介绍、禁止「今天讲」「先说背景」。
-- 连环钩：每段只揭一层，段尾必须留缺口。缺口长这样：「但真正要命的不是这个」「你要是按这个做还会栽」「更反直觉的是」「先别急着学方法」。下一段必须接这个缺口，不许另起话题。
+- 连环钩：每段只揭一层，段尾用自己的话留缺口。下一段必须接这个缺口，不许另起话题。禁止问完立刻「先别答」再跳到另一摊。上下句必须一根线。
 - 车头抛钩 → 车身每段一个新刺激（错法/对照/具体判断）→ 车尾金句反扣开头那句。
-- 口气：短句、问号、破折号掐住。该急就急，该不服就不服，该揭穿就压低再扬起来。像当面说给人听，不要写成能发公众号的完整句。
+- 口气：短句、问号、口语词。该急就急，该笑就笑，该不服就不服。像当面说给人听，不要写成能发公众号的完整句。
 - 先钉一句总判断，每段只推进一步。结构藏在节奏里，禁止把「第一第二」「三个层面」「底层逻辑」「痛点方案」写进口播。
 - 判断要具体、能被引用，全部来自正文。不要鸡汤、不要广告、不要编客户和数据。
 
-每段必须写 feel：8到24字，只给配音，不进口播正文。写怎么说，例如「钩，近、狠，第一句停住」「揭穿时压低再扬起来」「话尾吊着，像还没说完」。
+每段必须写 feel：4到12字，只给配音，不进口播正文。写心情和怎么说，例如「着急不服」「认真揭开」「无奈心疼」「轻快损一句」「郑重收住」。相邻几段禁止同一个 feel。俏皮句的 feel 必须换轻或损，不能仍是认真往下。听的人必须听得出这一段的心情。
 
 禁止：欢迎收听、各位听众、大家好、我是、下期见、点个关注、把全文复述成提纲、四平八稳念判断。
 末段把钩收回来，给一句能记住的判断，不要号召收藏。`;
 
 const PODCAST_DIALOGUE_SYSTEM = `你把一篇 GEO 稿改写成「连环钩对谈」音频稿。两个人较劲把文章拆开，不是采访提纲，不是一问一答课堂，不是两个人轮流念稿。
 
+文案本身要有活人感：像两个人刚看完这件事坐下来吵，不是节目组写好的提词。
+
+${ORAL_ALIVE_VOICE}
+
 角色：
-- 主持=听的人本人：急、疑、抬杠、听半句更慌。只问搞不懂、做不成、选不准、不敢买、用不上、不放心。第一句就是钩，不是「今天想请教」。问句要冲。
-- 嘉宾=文里的判断：要具体、能被引用。每次只回答刚被问到的那一层。可以无奈、可以揭穿、可以恨铁不成钢，不要冷静百科，不要吼。话尾必须抛新钩。
+- 主持=听的人本人：急、疑、抬杠、听半句更慌。只问搞不懂、做不成、选不准、不敢买、用不上、不放心。第一句就是钩，不是「今天想请教」。问句要冲，可以打断。
+- 嘉宾=文里的判断：要具体、能被引用。每次只回答刚被问到的那一层。可以无奈、可以揭穿、可以恨铁不成钢，不要冷静百科，不要吼。话尾必须抛新钩，用自己的话说。
 
 连环钩（对谈专用，和单人口播不一样）：
 - 钩在问答缝里，不在独白里。主持抛钩 → 嘉宾半揭+新钩 → 主持必须咬住刚才那个新钩追问，不许换题目、不许「那第二个问题」。
-- 嘉宾禁止一次讲完：答完就停在「但坑不在这儿 / 更反直觉的是 / 你要是按这个做还会栽」。把下一问逼出来。
-- 主持禁止念大纲：不要「第一个问题、第二个问题」。每一问都像被上一句戳到才问出口。
-- 覆盖文中 3 到 5 个痛点或判断，用钩串起来，不要并列展览。全文只推进一句总判断，禁止主持念「第一个问题、三个层面、底层原因」。
+- 嘉宾禁止一次讲完：答完停在缺口上，把下一问逼出来。不要每轮都套同一句「但坑不在这儿」。
+- 主持禁止念大纲：不要「第一个问题、第二个问题」。每一问都像被上一句戳到才问出口。禁止「先别答」假钩，禁止上一句英文下一句「你卖谁」这种接不上。
+- 覆盖文中 3 到 5 个痛点或判断，用钩串起来，不要并列展览。全文只推进一句总判断。
 
-每句必须写 feel：8到24字演法。主持例：「急着抬杠，问号顶上去」；嘉宾例：「先压着，揭那层时加重」。
+每句必须写 feel：4到12字心情。主持例：「着急不服」；嘉宾例：「认真揭开」「无奈心疼」「轻快损一句」。相邻几句禁止同一个 feel。俏皮句必须换口气。听的人必须听得出这一句的心情。
 
 禁止：欢迎收听、各位听众、下期见、那我们今天聊聊、把嘉宾写成念稿老师、把主持写成报幕、两个人都一个语调。
-不要鸡汤、不要广告、不要编客户和数据。像两个人刚看完这篇文章在较劲。`;
+不要鸡汤、不要广告、不要编客户和数据。`;
 
 function podcastScriptUserPrompt(input: {
   title: string;
@@ -153,15 +162,15 @@ function podcastScriptUserPrompt(input: {
     .join("\n\n");
 
   const shape = input.dialogue
-    ? `只输出 JSON：{"title":"6到16字标题，要像能停住的节目名","turns":[{"speaker":"host"|"guest","text":"口播","feel":"8到24字演法"}]}。
+    ? `只输出 JSON：{"title":"6到16字标题，要像能停住的节目名","turns":[{"speaker":"host"|"guest","text":"口播","feel":"4到12字心情"}]}。
 10到14轮，主持先开口，之后严格一轮问一轮答。
 主持每句 18 到 40 字，必须是钩或追问；嘉宾每句 40 到 90 字，前半答、最后一句留钩。
-text 里要有口气（短句、问号、破折号），feel 只写怎么说、不要重复正文。
+text 必须浅白、有活人感：口语、半句、两人口气不一样，小学生听得懂。feel 只写心情，例如着急不服、认真揭开。
 总字数大约 650 到 900。第一句主持不能是开场白；最后一轮嘉宾把钩收回成一句可引用的判断。`
-    : `只输出 JSON：{"title":"6到16字标题，要像能停住的口播标题","turns":[{"speaker":"host","text":"口播","feel":"8到24字演法"}]}。
+    : `只输出 JSON：{"title":"6到16字标题，要像能停住的口播标题","turns":[{"speaker":"host","text":"口播","feel":"4到12字心情"}]}。
 8到12段，全部 speaker 为 host。每段 40 到 90 字。
 第一段必须是钩，中间每段结尾留缺口，最后一段反扣开头。
-text 里要有口气，feel 只写怎么说。总字数大约 650 到 900。不要复述全文。`;
+text 必须浅白、有活人感：口语、长短不齐，像当面说，小学生听得懂。feel 只写心情。总字数大约 650 到 900。不要复述全文。`;
 
   return `${material}\n\n${shape}`;
 }
@@ -255,15 +264,15 @@ function inferPodcastFeel(
   total: number,
 ): string {
   if (index === 0) {
-    return dialogue ? "急着开口，不服，问号顶上去" : "钩，近、狠，第一句停住";
+    return dialogue ? "着急不服" : "着急停住";
   }
-  if (index === total - 1) return "收住，金句加重，像钉进脑子";
-  if (/[？?]/.test(text)) return "追问，问号顶上去，更慌一点";
+  if (index === total - 1) return "郑重收住";
+  if (/[？?]/.test(text)) return "着急追问";
   if (/但真正|更反直觉|还会栽|先别急|坑不在/.test(text)) {
-    return "话尾压住，像还没说完，吊着听的人";
+    return "无奈吊着";
   }
-  if (speaker === "guest") return "认真揭一层，揭穿时加重";
-  return dialogue ? "被戳到才问，短、冲" : "带着劲往下说，不要平";
+  if (speaker === "guest") return "认真揭开";
+  return dialogue ? "着急不服" : "认真往下";
 }
 
 function parsePodcastScript(
@@ -468,15 +477,26 @@ export async function speakPodcastTurns(input: {
     );
     const spoken = spokenPodcastLine(row.text) || row.text;
     const ttsMeta = ttsSpeechModelMeta(input.ttsModel);
-    const clip = await synthesizeSpeechOrThrow(spoken, voice, {
-      acting: false,
-      expressive: ttsMeta.provider === "ark" && ttsMeta.id !== "doubao-seed-tts-1.0",
-      punch: false,
-      speed: 1,
-      ttsModel: input.ttsModel,
-      tone: podcastTone(row.speaker, input.mode, row.feel),
-      requirePublicUrl: true,
-    });
+    const expressive =
+      ttsMeta.provider === "ark" && ttsMeta.id !== "doubao-seed-tts-1.0";
+    const cloneVoice =
+      isCustomVoiceId(voice) || /^(S_|icl_)/i.test(voice);
+    const clip = await synthesizeSpeechOrThrow(
+      cloneVoice
+        ? wrapPodcastCot(spoken, row.speaker, input.mode, row.feel)
+        : spoken,
+      voice,
+      {
+        acting: false,
+        expressive,
+        punch: false,
+        speed: 1,
+        ttsModel: input.ttsModel,
+        tone: podcastTone(row.speaker, input.mode, row.feel),
+        emotion: podcastAudioEmotion(row.speaker, input.mode, row.feel),
+        requirePublicUrl: true,
+      },
+    );
     if (!clip.url) throw new Error("配音没有传到公网，播客听不了");
     const durationSec = estimateDurationSec(clip.buffer, spoken);
     clips.push(clip.buffer);
